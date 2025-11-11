@@ -1,0 +1,244 @@
+PROJECT NAME:
+CallAssist — Local Real-Time Speech Response System
+
+AUTHOR:
+Quinn Evans
+
+PROGRAMMING LANGUAGE:
+Python 3.x
+
+DEVELOPMENT ENVIRONMENT:
+Visual Studio (Windows)
+
+PACKAGING:
+PyInstaller (.exe build for local use)
+
+---
+
+OVERVIEW:
+CallAssist is a lightweight, offline desktop application that listens to live speech, converts it to text using a local Whisper-based ASR model, and displays scripted response suggestions based on a Q&A dataset stored in JSON format. It is designed to assist sales or support agents by showing them the correct response to customer questions in real time.
+
+The system operates fully offline — no API keys, no cloud services, and no data storage. It runs on any Windows laptop with sufficient CPU resources and optionally leverages GPU acceleration if available.
+
+The architecture is modular, enabling future extensions such as local LLM support, VoIP streaming, or direct AI response generation.
+
+---
+
+SYSTEM GOALS:
+1. Use Whisper ASR (via the faster-whisper library) to transcribe live audio from the microphone.
+2. Match transcribed text against a locally stored Q&A dataset (qa_script.json) using fuzzy or semantic similarity.
+3. Display recognized text and corresponding responses in a modern, minimal desktop UI.
+4. Provide a toggle button (Live / Off) to enable or disable microphone listening.
+5. Offer a fallback manual text input field for low-confidence speech detections.
+6. Package everything into a single .exe for distribution.
+7. Run entirely offline with zero dependencies on external APIs or internet access.
+8. Maintain a scalable, modular structure to add LLM or VoIP later.
+
+---
+
+SYSTEM COMPONENTS:
+
+1. AUDIO INPUT
+   - Captured using the sounddevice or PyAudio library.
+   - Streams small chunks (e.g., 2–3 seconds) of audio to the ASR engine.
+   - Only active when the user toggles “Live” mode on.
+
+2. AUTOMATIC SPEECH RECOGNITION (ASR)
+   - Implemented with the faster-whisper Python library.
+   - Runs the Whisper model locally — no API keys required.
+   - Model choices: “tiny” (fastest) or “base” (better accuracy).
+   - Automatically detects language and transcribes audio in real time.
+   - The system can later support GPU acceleration (set device="cuda").
+
+3. TEXT MATCHING
+   - Uses RapidFuzz for fast string similarity comparison between user text and script questions.
+   - If the best match confidence falls below a threshold (e.g., 70%), the user is prompted to type the question manually.
+   - Supports optional future upgrade to semantic embeddings (sentence-transformers).
+
+4. Q&A SCRIPT DATABASE
+   - JSON file (e.g., qa_script.json) containing question–answer pairs.
+   - Loaded into memory at startup for fast lookups.
+   - No writes or updates — all data is static for this version.
+
+5. USER INTERFACE
+   - Developed with Tkinter for simplicity and zero dependencies.
+   - Layout includes:
+       - Large text display for live transcriptions.
+       - Response display panel.
+       - Live/Off toggle button.
+       - Optional manual question entry field.
+   - Visual theme: minimalist, high contrast, responsive to resizing.
+
+6. BACKEND CONTROL LOGIC
+   - Central manager handles:
+       - Model initialization
+       - Audio stream state (start/stop)
+       - Matching flow
+       - UI event triggers
+   - Runs asynchronously so ASR doesn’t block the UI thread.
+
+7. DEPLOYMENT
+   - Entire system packaged into a single .exe using PyInstaller.
+   - No separate installation or dependencies required for the end user.
+   - Whisper model and JSON file are bundled inside the application.
+
+---
+
+SYSTEM ARCHITECTURE:
+
+                    ┌────────────────────────────┐
+                    │        MICROPHONE          │
+                    └─────────────┬──────────────┘
+                                  │
+                                  ▼
+                    ┌────────────────────────────┐
+                    │   WHISPER ASR (Local)      │
+                    │   faster-whisper model     │
+                    └─────────────┬──────────────┘
+                                  │
+                                  ▼
+                    ┌────────────────────────────┐
+                    │  TEXT MATCHING (RapidFuzz) │
+                    └─────────────┬──────────────┘
+                                  │
+                                  ▼
+                    ┌────────────────────────────┐
+                    │   RESPONSE RETRIEVAL (Q&A) │
+                    └─────────────┬──────────────┘
+                                  │
+                                  ▼
+                    ┌────────────────────────────┐
+                    │   UI DISPLAY / CONTROLLER  │
+                    └────────────────────────────┘
+
+---
+
+DATA FLOW:
+1. The user enables “Live.”
+2. The microphone captures audio and sends it to the Whisper model.
+3. Whisper converts speech → text.
+4. The text is matched against the Q&A dataset using RapidFuzz.
+5. The best response is displayed.
+6. If the confidence score < threshold:
+   - Display “Didn’t catch that. Type your question.”
+   - Wait for manual input.
+7. When the user disables “Live,” all audio threads close and the model pauses.
+
+---
+
+MODULE STRUCTURE:
+
+project_root/
+│
+├── main.py              # Initializes app, runs UI, loads components
+├── asr.py               # Handles Whisper model setup & live transcription
+├── matcher.py           # Text matching logic (RapidFuzz)
+├── ui.py                # Tkinter interface layout & event binding
+├── qa_script.json       # Static question/answer data
+├── context.txt          # Project context file
+└── requirements.txt     # pip dependencies
+
+---
+
+INSTALLATION GUIDE (DEVELOPMENT SETUP):
+
+1. Create a virtual environment:
+   python -m venv venv
+   venv\Scripts\activate
+
+2. Install dependencies:
+   pip install faster-whisper sounddevice rapidfuzz pyinstaller numpy
+
+   Optional (for future expansion):
+   pip install sentence-transformers webrtcvad
+
+3. Verify Whisper installation:
+   from faster_whisper import WhisperModel
+   model = WhisperModel("tiny", device="cpu")
+   segments, info = model.transcribe("audio_sample.wav")
+   for seg in segments:
+       print(seg.text)
+
+4. Install FFmpeg (for Whisper audio preprocessing):
+   winget install ffmpeg
+
+---
+
+DEPLOYMENT STEPS (BUILD TO EXE):
+
+1. Create a clean folder with:
+   - main.py
+   - asr.py
+   - matcher.py
+   - ui.py
+   - qa_script.json
+   - Whisper model folder (optional pre-downloaded)
+
+2. Run PyInstaller:
+   pyinstaller --onefile --noconsole --add-data "qa_script.json;." main.py
+
+3. The executable will appear in:
+   dist/main.exe
+
+4. Distribute this .exe (or zip the entire dist folder).
+
+5. The end user double-clicks main.exe to start the app — no setup, no coding.
+
+---
+
+DEVELOPMENT CHECKLIST:
+
+☑ Set up Python environment  
+☑ Install Whisper + dependencies  
+☑ Create qa_script.json (initial test dataset)  
+☑ Implement transcription loop in asr.py  
+☑ Implement fuzzy matching logic in matcher.py  
+☑ Build basic Tkinter UI (ui.py)  
+☑ Integrate ASR + matcher into the UI controller (main.py)  
+☑ Add Live/Off toggle  
+☑ Test on real mic input  
+☑ Package with PyInstaller  
+☑ Verify local execution on clean system  
+
+---
+
+SCALABILITY PLAN (NEXT PHASES):
+
+1. PHASE 2: LLM Integration
+   - Create a new llm.py module.
+   - Allow responses to be enhanced by a local model (Phi-3-mini or Mistral-7B via Ollama).
+   - Add a configuration flag to switch between script lookup and LLM reasoning.
+
+2. PHASE 3: VoIP Integration
+   - Replace mic input with VoIP or audio stream (e.g., Twilio or virtual audio cable).
+   - Use same ASR/matcher backend.
+
+3. PHASE 4: Multi-Agent Expansion
+   - Enable multiple Q&A “profiles” for different sales scripts or industries.
+
+4. PHASE 5: UI Enhancements
+   - Switch to PyQt for dynamic resizing, dark mode, and theme customization.
+   - Add text highlighting for key terms in responses.
+
+---
+
+PERFORMANCE NOTES:
+- For real-time responsiveness, use the “tiny” Whisper model.  
+- On CPU, expect ~1.5× real-time transcription speed.  
+- On GPU (CUDA), expect <0.5s latency per phrase.  
+- Keep the ASR chunk size small (2–4 seconds) for best live performance.
+
+---
+
+PRIVACY & SECURITY:
+- Entirely local inference.
+- No data saved or transmitted.
+- No network connections made by the app.
+- Model and Q&A data reside in memory only.
+
+---
+
+SUMMARY:
+CallAssist is a self-contained local speech assistant application that transcribes live audio using Whisper (faster-whisper), matches recognized speech to a local Q&A script, and displays response suggestions in a clean interface. It is designed to be private, fast, and extensible — suitable for sales, customer support, or training scenarios.
+
+The application architecture ensures long-term maintainability and scalability while remaining fully functional offline and free to distribute.

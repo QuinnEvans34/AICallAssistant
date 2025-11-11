@@ -1,0 +1,9 @@
+faster-whisper
+sounddevice
+rapidfuzz
+pyinstaller
+numpy
+sentence-transformers
+webrtcvad
+requests
+flet

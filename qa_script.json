@@ -1,0 +1,122 @@
+[
+  {
+    "question": "what is solar energy",
+    "answer": "Solar energy is power generated from sunlight using photovoltaic panels that convert light into electricity."
+  },
+  {
+    "question": "how much does solar cost",
+    "answer": "The cost depends on system size and local incentives, but most residential solar systems range from $15,000 to $25,000 before tax credits."
+  },
+  {
+    "question": "how long does installation take",
+    "answer": "Typical solar installations take one to three days once permitting and design are approved."
+  },
+  {
+    "question": "what is the warranty",
+    "answer": "Most panels come with a 25-year production warranty and a 10-12 year workmanship warranty from the installer."
+  },
+  {
+    "question": "how does net metering work",
+    "answer": "Net metering allows you to send excess electricity back to the grid and receive credits that reduce your utility bill."
+  },
+  {
+    "question": "how much can I save",
+    "answer": "Savings depend on energy use, local rates, and system size, but many homeowners cut power bills by 60-100 percent."
+  },
+  {
+    "question": "what happens at night",
+    "answer": "At night, your panels stop producing electricity, but if you have credits from the day or battery storage, you’ll still have power."
+  },
+  {
+    "question": "do solar panels work on cloudy days",
+    "answer": "Yes, panels still generate power on cloudy days, though output may drop by 10 to 25 percent."
+  },
+  {
+    "question": "how long do solar panels last",
+    "answer": "Modern solar panels typically last 25 to 30 years with minimal degradation in output."
+  },
+  {
+    "question": "what financing options are available",
+    "answer": "You can buy, lease, or finance solar panels through loans. Many customers choose low-interest solar loans with zero down payment."
+  },
+  {
+    "question": "what maintenance is required",
+    "answer": "Solar systems require very little maintenance beyond occasional panel cleaning and inspection to ensure optimal performance."
+  },
+  {
+    "question": "what if i move after getting solar",
+    "answer": "You can either transfer the solar agreement to the new homeowner or pay off the system balance and include it in your home sale value."
+  },
+  {
+    "question": "do solar panels increase home value",
+    "answer": "Yes, studies show homes with solar sell for about 4 percent more on average and sell faster than comparable non-solar homes."
+  },
+  {
+    "question": "how does battery storage work",
+    "answer": "Battery storage saves excess power your panels generate during the day so you can use it at night or during outages."
+  },
+  {
+    "question": "what are the benefits of adding a battery",
+    "answer": "A battery provides backup power during outages, helps you use more of your own solar energy, and reduces dependence on the grid."
+  },
+  {
+    "question": "what is the lifespan of a solar battery",
+    "answer": "Most lithium-ion batteries last 10 to 15 years and come with warranties guaranteeing performance over that period."
+  },
+  {
+    "question": "can i add a battery later",
+    "answer": "Yes, you can install a battery later, but it’s often more cost-effective to include it with the original system since equipment and permits overlap."
+  },
+  {
+    "question": "what incentives or tax credits are available",
+    "answer": "The federal solar tax credit currently covers 30 percent of total system cost, and many states or utilities offer additional rebates or performance incentives."
+  },
+  {
+    "question": "how does solar affect my utility bill",
+    "answer": "Your solar system reduces or eliminates your power bill by offsetting your energy usage. Any remaining utility charges are for minimal grid connection fees."
+  },
+  {
+    "question": "will solar work during a power outage",
+    "answer": "Grid-tied solar systems shut off automatically for safety during outages, but if you have battery storage, your home can still run on stored energy."
+  },
+  {
+    "question": "can i go completely off the grid",
+    "answer": "Yes, with enough panels and battery capacity, you can operate off-grid, though most homeowners stay grid-connected for backup reliability."
+  },
+  {
+    "question": "how do i monitor my solar system",
+    "answer": "Most systems include a mobile app or online portal that tracks production, battery charge, and energy usage in real time."
+  },
+  {
+    "question": "does weather or snow damage solar panels",
+    "answer": "Panels are built to withstand hail, snow, and high winds. Snow usually melts quickly off the smooth glass surface once the sun hits it."
+  },
+  {
+    "question": "what permits are needed",
+    "answer": "Your installer handles all necessary building, electrical, and utility interconnection permits as part of the project process."
+  },
+  {
+    "question": "how long does it take to get solar approved",
+    "answer": "Design, permitting, and utility approval typically take four to eight weeks before installation can begin."
+  },
+  {
+    "question": "can i finance batteries too",
+    "answer": "Yes, most solar financing plans allow you to include batteries in the same loan or lease package."
+  },
+  {
+    "question": "what happens when panels stop working",
+    "answer": "If a panel underperforms, monitoring alerts your installer, and warranty coverage ensures replacement or repair at no cost."
+  },
+  {
+    "question": "what size system do i need",
+    "answer": "System size depends on your annual electricity usage, roof space, and sunlight exposure. Most homes need 20–30 panels."
+  },
+  {
+    "question": "how do i qualify for solar",
+    "answer": "Qualification depends on roof condition, sunlight access, credit approval, and local utility policies. Most homeowners meet the requirements."
+  },
+  {
+    "question": "what are the environmental benefits",
+    "answer": "Solar reduces reliance on fossil fuels and cuts carbon emissions equivalent to planting hundreds of trees over the system’s lifetime."
+  }
+]

@@ -1,0 +1,35 @@
+# CallAssist Project Scope Outline
+
+## Overview
+CallAssist is an offline speech-to-response system for Q&A matching, built with Python. It uses speech recognition to transcribe user questions, matches them against a Q&A database using fuzzy matching, and displays responses in a GUI. The system accumulates transcriptions to handle full questions without cutoffs, processing after periods of silence.
+
+## Files Outline
+
+### context.txt
+- **Purpose/Goal**: Provides project context, requirements, and setup instructions for the CallAssist application.
+- **How it works**: This is a text file containing descriptive information about the project's objectives, features, and usage. It serves as documentation for understanding the app's functionality and setup process.
+
+### qa_script.json
+- **Purpose/Goal**: Stores the static Q&A data for solar energy-related questions and answers.
+- **How it works**: A JSON file with a list of objects, each containing a "question" and "answer" field. The matcher module loads this data and uses fuzzy string matching to find the best response for user queries.
+
+### requirements.txt
+- **Purpose/Goal**: Lists the Python dependencies required to run the application.
+- **How it works**: A standard pip requirements file specifying packages like faster-whisper, sounddevice, rapidfuzz, and tkinter. Used to install dependencies in a virtual environment via `pip install -r requirements.txt`.
+
+### main.py
+- **Purpose/Goal**: The main controller script that orchestrates the application, handling transcription accumulation, silence-based processing, and UI interactions.
+- **How it works**: Initializes components (ASR, Matcher, UI), manages a text buffer for accumulating transcriptions, uses a Tkinter timer for silence detection (1.5 seconds), and processes full questions for matching. Also handles app lifecycle, including clean shutdown.
+
+### asr.py
+- **Purpose/Goal**: Implements automatic speech recognition (ASR) using the Whisper model for real-time audio transcription.
+- **How it works**: Uses sounddevice for audio capture, faster-whisper for transcription with a "tiny" model. Employs a rolling buffer with 2.5-second chunks and 0.75-second overlap to handle continuous speech. Runs transcription in a separate thread, calling back to main.py with transcribed text.
+
+### matcher.py
+- **Purpose/Goal**: Performs fuzzy string matching between user questions and the Q&A database to find the best response.
+- **How it works**: Loads Q&A data from qa_script.json, uses RapidFuzz for fuzzy ratio matching with a 70% threshold. Iterates through questions, calculates similarity scores, and returns the answer of the best match if above threshold.
+
+### ui.py
+- **Purpose/Goal**: Provides the graphical user interface (GUI) using Tkinter for user interaction, displaying status, transcript, and responses.
+- **How it works**: Creates a window with buttons for starting/stopping live mode, text areas for transcript and response display, and a manual input field. Handles user actions like toggling ASR and submitting manual questions, updating displays in real-time.</content>
+<parameter name="filePath">c:\Users\quinn\Desktop\ESSolarAI\scope.txt

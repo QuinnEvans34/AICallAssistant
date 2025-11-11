@@ -1,0 +1,197 @@
+# ---------------------------------------------------------------------------
+# CALLASSIST IMPROVEMENT PLAN — PERFORMANCE & FLUIDITY UPGRADE
+# ---------------------------------------------------------------------------
+# Context:
+# The current ASR pipeline is structurally correct but limited by
+# (1) Whisper batch inference latency,
+# (2) slightly delayed VAD-based flush behavior,
+# (3) 1.0s chunk size + 0.35 overlap window (too short for stable context),
+# (4) missing time profiling, and
+# (5) synchronous matching after transcription.
+#
+# The goal is to make CallAssist process audio more smoothly, respond faster,
+# and handle continuous speech naturally without losing words mid-sentence.
+# ---------------------------------------------------------------------------
+
+## 1. MODEL OPTIMIZATION
+- Keep using a single WhisperModel instance globally (already done).
+- Switch model initialization from "small" to "small-int8" or "base-int8"
+  dynamically based on available CPU performance.
+- Add a warm-up call in __init__ after model load:
+  ```python
+  self.model.transcribe(np.zeros(int(16000 * 0.5), dtype=np.float32))
+This prevents first-transcription lag.
+
+Explicitly set:
+
+python
+Copy code
+beam_size=5
+condition_on_previous_text=True
+vad_filter=False
+(You’ll manage silence externally.)
+
+2. AUDIO STREAM & CHUNKING IMPROVEMENT
+Issue:
+Chunks are 1.0s with 0.35 overlap — too small for Whisper’s language context.
+Whisper works best on windows of 2–3 seconds with overlap.
+
+Fix:
+Increase CHUNK_SEC = 1.5
+
+Increase OVERLAP_SEC = 0.5
+
+Maintain a rolling queue for recent 5–6 seconds of audio.
+
+Instead of transcribing on fixed buffer flushes, implement an adaptive
+segmentation method that transcribes when 0.8s of silence follows speech.
+
+Implementation Notes:
+Continue using InputStream (non-blocking).
+
+Store the last 0.5s overlap from each chunk.
+
+Concatenate new audio with the overlap buffer for each inference window.
+
+This avoids the frequent “cutoff” at phrase boundaries.
+
+3. SILENCE DETECTION (VAD IMPROVEMENT)
+Current:
+Using WebRTC VAD or energy detection; flushes after 0.7s of trailing silence.
+
+Fix:
+Replace _should_flush_buffer() logic with adaptive segmentation:
+
+Start capturing when VAD detects speech.
+
+Continue until silence >= 0.8s.
+
+Send the buffered segment to _transcribe_audio.
+
+Keep a max buffer limit (6s) to avoid overflow.
+
+Benefit: no arbitrary timers, smoother speech grouping.
+
+4. THREADING & PIPELINE SMOOTHNESS
+Current:
+Two threads (record + transcribe), both working but slightly laggy due to
+queue blocking and small buffer sizes.
+
+Fix:
+Add a dedicated processing_thread that handles transcription separately
+from recording and VAD detection.
+
+Use three queues:
+
+audio_q: raw chunks from InputStream
+
+vad_q: processed audio after silence-based segmentation
+
+text_q: transcribed text to send to matcher/UI
+
+This creates a true pipeline (record → segment → transcribe → match → UI).
+
+Example Concept:
+sql
+Copy code
+record_thread → feeds audio_q
+vad_thread    → reads audio_q, groups sentences, pushes vad_q
+transcribe_thread → reads vad_q, runs Whisper, pushes text_q
+main/UI thread → consumes text_q, matches responses
+This ensures constant recording and continuous flow — no waiting between stages.
+
+5. AUDIO PREPROCESSING
+Add normalization before sending to Whisper:
+python
+Copy code
+audio = audio.astype(np.float32)
+audio = audio / np.max(np.abs(audio)) if np.max(np.abs(audio)) > 0 else audio
+Optional noise reduction:
+Integrate webrtcvad gating or rnnoise for simple background suppression.
+
+These improve Whisper’s accuracy and confidence on phone-quality audio.
+
+6. PERFORMANCE PROFILING
+Add timing to _transcribe_audio:
+python
+Copy code
+start = time.perf_counter()
+segments, _ = self.model.transcribe(audio, beam_size=5, condition_on_previous_text=True)
+elapsed = time.perf_counter() - start
+print(f"Transcription took {elapsed:.2f}s for {len(audio)/16000:.2f}s of audio")
+This helps tune chunk size vs. real-time ratio.
+
+7. MATCHER INTEGRATION
+Current:
+Matching waits for silence (1.5s debounce), then runs synchronously.
+
+Fix:
+Trigger match as soon as transcription result arrives.
+
+Use a worker thread for matching to prevent UI freeze.
+
+Keep silence-triggered batching only to separate full questions.
+
+Result:
+Responses begin appearing instantly as the transcription finishes.
+
+8. RESPONSIVENESS IMPROVEMENT SUMMARY
+Area	Change	Benefit
+Model load	Warm-up + int8 compute	Removes first-call lag
+Chunking	1.5s window + 0.5s overlap	Prevents mid-sentence cutoffs
+VAD logic	Adaptive silence segmentation	Captures full questions
+Threading	3-stage pipeline	Continuous processing
+Normalization	Gain balancing	Better ASR accuracy
+Matching	Background thread	Faster visible response
+
+9. OPTIONAL ADVANCED UPGRADES
+a. Asynchronous Whisper (streaming feel)
+Use a thread pool or async task per chunk, merge text fragments as they arrive.
+
+b. Context retention
+Concatenate recent transcriptions (last 2 phrases) and feed as initial_prompt
+in Whisper for better semantic continuity.
+
+c. Text smoothing
+Add lightweight punctuation restoration or capitalization cleanup post-ASR
+for a professional text appearance.
+
+10. VALIDATION CRITERIA
+After implementation:
+
+Whisper output latency < 1.0s after speech stops.
+
+No mid-sentence cutoffs at normal speaking speed.
+
+No missing or repeated phrases between buffers.
+
+CPU utilization stable < 90% average.
+
+Response appears within 0.5–1.5s of finished question.
+
+11. DEVELOPMENT ORDER
+Increase chunk size and overlap.
+
+Implement adaptive VAD segmentation.
+
+Add normalization before Whisper call.
+
+Add time logging and warm-up step.
+
+Split transcription into 3-thread pipeline.
+
+Refactor matcher trigger to async mode.
+
+Test latency and accuracy.
+
+Profile results and adjust thresholds.
+
+12. SUMMARY STATEMENT
+These changes will make CallAssist’s ASR pipeline behave like a true
+continuous speech recognizer rather than discrete batch inference.
+Speech will flow naturally, Whisper will have sufficient context to
+avoid cutoffs, and responses will appear nearly instantly after speech ends.
+Once this foundation is solid, you can later substitute an optimized
+streaming model or LLM-backed inference without rearchitecting the system.
+
+---------------------------------------------------------------------------

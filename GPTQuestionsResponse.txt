@@ -1,0 +1,135 @@
+# GPT Questions Response
+
+## ASR Integration / Whisper Behavior
+
+1. “Show me the code that initializes and loads the Whisper model in asr.py, including which model name and device are used.”
+
+   The Whisper model is initialized in the `__init__` method of `ASRManager` in `asr.py`:
+
+   ```python
+   model_name = os.environ.get("CALLASSIST_MODEL_NAME", DEFAULT_MODEL_NAME)
+   ensure_model_downloaded(model_name, DEFAULT_CACHE_DIR)
+   self.model = WhisperModel(
+       model_name,
+       device="cpu",
+       compute_type="int8",
+       download_root=str(DEFAULT_CACHE_DIR),
+   )
+   ```
+
+   Where `DEFAULT_MODEL_NAME = "small"`, so it uses the "small" model on CPU with int8 compute type.
+
+2. “Where in my code do I pass audio from the microphone into Whisper? Show the exact function or loop that collects the audio and calls model.transcribe().”
+
+   Audio is collected in the `_record_loop` using `sd.InputStream` with a callback that enqueues chunks. The transcription happens in `_transcribe_loop`, which dequeues chunks, accumulates them into `current_buffer`, and when `_should_flush_buffer()` is true, calls `_flush_buffer()`, which then calls `_transcribe_audio(segment)`.
+
+   The exact call to `model.transcribe()` is in `_transcribe_audio`:
+
+   ```python
+   def _transcribe_audio(self, audio: np.ndarray) -> None:
+       if len(audio) == 0:
+           return
+       segments, _ = self.model.transcribe(
+           audio,
+           beam_size=BEAM_SIZE,
+           vad_filter=True,
+           condition_on_previous_text=True,
+       )
+       full_text = "".join(seg.text for seg in segments).strip()
+       print(f"Transcribed: '{full_text}'")
+       if full_text and len(full_text) > 3:
+           self.callback(full_text)
+   ```
+
+3. “How is my audio being chunked before transcription — what length (seconds) and overlap values are used, and how are they concatenated?”
+
+   Audio is chunked into 1.0-second blocks (`CHUNK_SEC = 1.0`), with 0.35-second overlap (`OVERLAP_SEC = 0.35`). In `_flush_buffer`, the segment is `np.concatenate((self.previous_overlap, self.current_buffer))`, where `self.previous_overlap` is the last 0.35 seconds of the previous buffer, and `self.current_buffer` accumulates chunks until flush.
+
+4. “Does my transcription function reuse the Whisper model instance, or is it being reloaded for each call?”
+
+   It reuses the same `WhisperModel` instance (`self.model`), initialized once in `__init__` and reused for all transcriptions.
+
+5. “How is Whisper returning the transcribed text — am I handling the segments properly or just concatenating all text at once?”
+
+   Whisper returns segments, and the code handles them properly by iterating: `full_text = "".join(seg.text for seg in segments).strip()`. It concatenates all segment texts into one string.
+
+## Audio Capture / Buffer Flow
+
+6. “Show me how audio is recorded using sounddevice in my current implementation — is it using InputStream, rec(), or something else?”
+
+   It uses `sd.InputStream` in `_record_loop`:
+
+   ```python
+   with sd.InputStream(
+       samplerate=self.sample_rate,
+       channels=self.channels,
+       dtype="float32",
+       blocksize=block_samples,
+       callback=callback,
+   ):
+   ```
+
+   Where `callback` enqueues the chunk.
+
+7. “Am I currently blocking on sd.wait() while recording chunks, or is my audio capture non-blocking?”
+
+   Non-blocking: It uses `InputStream` with a callback, so recording is asynchronous. The main loop waits with `while not self.stop_event.wait(0.1): pass`, but recording itself doesn't block.
+
+8. “How is my audio normalized or preprocessed before sending to Whisper (volume normalization, resampling, mono conversion)?”
+
+   Audio is captured as float32, mono (channels=1), at 16000 Hz. No explicit volume normalization; it's clipped to [-1,1] in `_float_to_pcm16` for VAD, but Whisper receives the raw float32 array. No resampling mentioned.
+
+9. “Where do I store the overlap buffer, and how is it combined with new audio chunks before each transcription?”
+
+   Overlap is stored in `self.previous_overlap` (initialized as zeros). In `_flush_buffer`, `segment = np.concatenate((self.previous_overlap, self.current_buffer))`, and then `self.previous_overlap` is updated to the last overlap_samples of `self.current_buffer`.
+
+10. “Does my code currently apply any VAD (voice activity detection) or silence detection before transcribing?”
+
+    Yes, VAD/silence detection is applied in `_should_flush_buffer()` via `_has_trailing_silence()`, which uses WebRTC VAD if available, or energy-based detection. Transcription flushes when trailing silence is detected or buffer timeout.
+
+## Threading / Event Flow
+
+11. “Show me how my ASR and UI threads are structured — is Whisper transcription running in a separate thread or the main thread?”
+
+    Transcription runs in a separate thread: `self.transcribe_thread = threading.Thread(target=self._transcribe_loop, daemon=True)`. Recording in another thread. UI/main thread runs Tkinter mainloop.
+
+12. “Am I using a queue to pass audio between the record and transcribe threads? If so, where is it initialized and consumed?”
+
+    Yes, `self.audio_q = Queue(maxsize=QUEUE_MAX_SIZE)` in `__init__`. Enqueued in `_enqueue_chunk` (called from record callback), dequeued in `_transcribe_loop`.
+
+13. “Does my UI or main loop ever block while Whisper is running? If yes, where does it wait?”
+
+    No, Whisper runs in a separate thread, so the UI/main loop does not block.
+
+14. “Is there a timing or sleep delay in my loop between audio chunks that could create gaps or lag?”
+
+    In `_record_loop`, `while not self.stop_event.wait(0.1): pass` waits 0.1s if not stopping. In `_transcribe_loop`, `chunk = self.audio_q.get(timeout=0.1)`. No significant delay causing gaps; chunks are 1.0s.
+
+## Latency & Processing Flow
+
+15. “Am I measuring how long each transcription call takes from audio capture to output? If not, where can I add timing?”
+
+    No timing measurement. You can add `import time` and wrap `_transcribe_audio` with `start = time.time()` and `print(time.time() - start)`.
+
+16. “How much delay occurs between when the user finishes speaking and when a response appears on screen?”
+
+    Delay is from VAD silence detection (0.7s trailing silence) plus transcription time (varies, ~0.5-2s for small model) plus matcher/UI update. Total ~1-3s after silence.
+
+17. “Is my code transcribing each chunk individually, or does it accumulate multiple chunks before calling Whisper?”
+
+    Accumulates multiple chunks in `self.current_buffer` until flush condition (silence or max buffer 6.0s), then transcribes the accumulated segment with overlap.
+
+## Integration with Matcher
+
+18. “Show me where the transcription result is passed to the matcher. Does this happen after each chunk or only after silence is detected?”
+
+    In `main.py`, transcription is passed to `on_transcription`, which accumulates in `text_buffer` and resets a 1.5s timer. After timer fires (silence), `_process_buffer` calls `self.matcher.match(full_text)`. So, matching happens only after silence, not after each chunk.
+
+19. “Am I debouncing or waiting too long before triggering the matcher when new text appears?”
+
+    Yes, debouncing with 1.5s silence timer to wait for full question before matching.
+
+20. “How is the matcher’s result sent to the UI — is it synchronous or queued?”
+
+    Synchronous: In `_process_buffer`, `response = self.matcher.match(full_text)`, then `self.ui.update_response(response)` directly in the main thread (since timer is Tkinter after).</content>
+<parameter name="filePath">c:\Users\quinn\Desktop\ESSolarAI\GPTQuestionsResponse.txt
