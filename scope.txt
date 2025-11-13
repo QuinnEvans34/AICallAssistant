@@ -1,35 +1,152 @@
-# CallAssist Project Scope Outline
+# CallAssist Project Scope - Solar Energy Q&A Assistant
 
-## Overview
-CallAssist is an offline speech-to-response system for Q&A matching, built with Python. It uses speech recognition to transcribe user questions, matches them against a Q&A database using fuzzy matching, and displays responses in a GUI. The system accumulates transcriptions to handle full questions without cutoffs, processing after periods of silence.
+## Project Overview
+CallAssist is an advanced offline AI-powered call assistance system designed for solar energy consultation. The system provides real-time speech-to-response capabilities, combining automatic speech recognition, intelligent question detection, intent classification, and LLM-powered response generation. Built for offline operation, it processes customer questions through a comprehensive pipeline that includes audio streaming, natural language understanding, and contextual response generation.
 
-## Files Outline
+## Core Architecture
+The system follows a modular, event-driven architecture with thread-safe communication between components. Audio input flows through a processing pipeline: Speech Recognition → Question Detection → Intent Classification → Knowledge Base Matching → LLM Response Generation → UI Display.
 
-### context.txt
-- **Purpose/Goal**: Provides project context, requirements, and setup instructions for the CallAssist application.
-- **How it works**: This is a text file containing descriptive information about the project's objectives, features, and usage. It serves as documentation for understanding the app's functionality and setup process.
+## Component Overview
 
-### qa_script.json
-- **Purpose/Goal**: Stores the static Q&A data for solar energy-related questions and answers.
-- **How it works**: A JSON file with a list of objects, each containing a "question" and "answer" field. The matcher module loads this data and uses fuzzy string matching to find the best response for user queries.
+### Core Processing Files
 
-### requirements.txt
-- **Purpose/Goal**: Lists the Python dependencies required to run the application.
-- **How it works**: A standard pip requirements file specifying packages like faster-whisper, sounddevice, rapidfuzz, and tkinter. Used to install dependencies in a virtual environment via `pip install -r requirements.txt`.
+#### main.py - Application Orchestrator
+**Purpose**: Central controller that initializes and coordinates all system components, managing the application lifecycle and inter-component communication.
 
-### main.py
-- **Purpose/Goal**: The main controller script that orchestrates the application, handling transcription accumulation, silence-based processing, and UI interactions.
-- **How it works**: Initializes components (ASR, Matcher, UI), manages a text buffer for accumulating transcriptions, uses a Tkinter timer for silence detection (1.5 seconds), and processes full questions for matching. Also handles app lifecycle, including clean shutdown.
+**Key Functions**:
+- Initializes ASR, question detection, response management, and UI components
+- Manages event-driven communication between modules
+- Handles application startup, shutdown, and error recovery
+- Coordinates real-time data flow from audio input to response output
 
-### asr.py
-- **Purpose/Goal**: Implements automatic speech recognition (ASR) using the Whisper model for real-time audio transcription.
-- **How it works**: Uses sounddevice for audio capture, faster-whisper for transcription with a "tiny" model. Employs a rolling buffer with 2.5-second chunks and 0.75-second overlap to handle continuous speech. Runs transcription in a separate thread, calling back to main.py with transcribed text.
+**Interactions**: Serves as the central hub connecting all other components through callback mechanisms.
 
-### matcher.py
-- **Purpose/Goal**: Performs fuzzy string matching between user questions and the Q&A database to find the best response.
-- **How it works**: Loads Q&A data from qa_script.json, uses RapidFuzz for fuzzy ratio matching with a 70% threshold. Iterates through questions, calculates similarity scores, and returns the answer of the best match if above threshold.
+#### stream_asr.py - Real-Time Speech Recognition
+**Purpose**: Provides continuous speech-to-text transcription with advanced speaker detection and intelligent text deduplication.
 
-### ui.py
-- **Purpose/Goal**: Provides the graphical user interface (GUI) using Tkinter for user interaction, displaying status, transcript, and responses.
-- **How it works**: Creates a window with buttons for starting/stopping live mode, text areas for transcript and response display, and a manual input field. Handles user actions like toggling ASR and submitting manual questions, updating displays in real-time.</content>
+**Key Features**:
+- Rolling circular audio buffer for seamless transcription
+- Speaker detection using energy analysis and WebRTC VAD
+- Overlapping audio snapshots for smooth, uninterrupted processing
+- Text deduplication to prevent repeated content
+- Thread-safe operation with background processing
+
+**Interactions**: Captures audio input and streams transcribed text to question_detector.py for real-time question extraction.
+
+#### question_detector.py - Intelligent Question Extraction
+**Purpose**: Analyzes streaming speech transcripts to identify and extract complete customer questions in real-time.
+
+**Key Features**:
+- Rolling text buffer management for continuous processing
+- Linguistic pattern recognition for question identification
+- Conjunction-based question splitting (e.g., "How much and when?")
+- Timeout-based flushing for conversational flow
+- Thread-safe ingest and dispatch processing
+
+**Interactions**: Receives text from stream_asr.py, extracts questions, and forwards them to response_manager.py for processing.
+
+#### response_manager.py - Response Orchestration Engine
+**Purpose**: Manages the complete question-to-response pipeline, including intent classification, caching, and LLM integration.
+
+**Key Features**:
+- Multi-level response caching (exact match + semantic similarity)
+- Intent classification using sentence transformers
+- Duplicate question detection with cooldown periods
+- Customer name personalization with usage limits
+- Streaming LLM response generation with fallback handling
+- Conversation context management
+
+**Interactions**: Receives questions from question_detector.py, processes them through matcher and LLM components, and sends formatted responses to the UI.
+
+#### matcher.py - Knowledge Base Matching
+**Purpose**: Performs fuzzy string matching between user questions and a comprehensive solar energy Q&A knowledge base.
+
+**Key Features**:
+- Fuzzy string similarity matching with configurable thresholds
+- Case-insensitive comparison for robustness
+- Ranked result return for fallback options
+- Optimized for solar energy domain terminology
+
+**Interactions**: Called by response_manager.py to find relevant Q&A pairs from qa_script.json for knowledge base lookup.
+
+#### llm.py - Language Model Integration
+**Purpose**: Manages Large Language Model interactions for generating natural, contextual responses to customer questions.
+
+**Key Features**:
+- Streaming response generation for real-time interaction
+- Intelligent prompt engineering with context and persona
+- Response length and token limit management
+- Model warm-up and connection optimization
+- Performance metrics and latency tracking
+
+**Interactions**: Called by response_manager.py to generate LLM responses when knowledge base matches are insufficient.
+
+### User Interface Files
+
+#### ui_flet.py - Modern Reactive UI
+**Purpose**: Provides a modern, responsive graphical user interface using Flet framework for real-time interaction display.
+
+**Key Features**:
+- Real-time updates for transcription and responses
+- Thread-safe UI updates with proper synchronization
+- Question editing and manual input capabilities
+- Chronological message ordering with timestamps
+- Responsive design for call center environments
+
+**Interactions**: Receives formatted responses from response_manager.py and displays them to the user with real-time updates.
+
+### Data and Configuration Files
+
+#### qa_script.json - Knowledge Base
+**Purpose**: Contains the comprehensive Q&A database for solar energy consultation, covering pricing, installation, warranties, and technical specifications.
+
+**Structure**: JSON array of question-answer objects used by matcher.py for knowledge base lookups.
+
+#### persona.txt - AI Personality Configuration
+**Purpose**: Defines the AI assistant's personality, tone, and behavioral guidelines for consistent solar consultant responses.
+
+#### requirements.txt - Dependency Management
+**Purpose**: Specifies all Python package dependencies required for offline operation, including ML libraries, audio processing, and UI frameworks.
+
+#### scope.txt - Project Documentation
+**Purpose**: This document - provides comprehensive overview of system architecture, component interactions, and project scope.
+
+## System Flow and Data Pipeline
+
+### Audio Input → Processing Pipeline:
+1. **Audio Capture** (stream_asr.py): Continuous microphone input with speaker detection
+2. **Speech Recognition** (stream_asr.py): Real-time transcription with deduplication
+3. **Question Detection** (question_detector.py): Linguistic analysis to extract complete questions
+4. **Intent Classification** (response_manager.py): Categorize questions by topic (pricing, installation, etc.)
+5. **Knowledge Base Lookup** (matcher.py): Fuzzy matching against Q&A database
+6. **Response Generation** (llm.py): LLM-powered response creation with context
+7. **UI Display** (ui_flet.py): Real-time presentation with conversation history
+
+### Key System Characteristics:
+- **Offline Operation**: No internet dependency for core functionality
+- **Real-Time Processing**: Sub-second response times for conversational flow
+- **Thread-Safe Architecture**: Concurrent processing without race conditions
+- **Intelligent Caching**: Multi-level response caching for performance
+- **Context Awareness**: Maintains conversation history and customer context
+- **Speaker Detection**: Distinguishes customer speech from agent responses
+- **Fallback Handling**: Graceful degradation when components fail
+
+## Technology Stack
+- **Speech Recognition**: Faster-Whisper (offline, high-performance)
+- **Audio Processing**: Sounddevice, NumPy, WebRTC VAD
+- **Natural Language**: Sentence Transformers, RapidFuzz
+- **LLM Integration**: Ollama with local models (Llama 3.2 3B)
+- **UI Framework**: Flet (modern, reactive Python GUI)
+- **Threading**: Python threading with queues for concurrency
+- **Data Storage**: JSON for configuration and knowledge base
+
+## Performance Characteristics
+- **Latency**: Sub-1-second response times for typical queries
+- **Accuracy**: High-confidence matching with intent classification
+- **Scalability**: Handles continuous conversation flows
+- **Resource Usage**: Optimized for local hardware (CPU inference)
+- **Reliability**: Comprehensive error handling and fallback mechanisms
+
+## Deployment and Usage
+The system is designed for deployment in call center environments where reliable, offline AI assistance is critical. It provides solar energy consultants with instant access to accurate information while maintaining natural conversation flow with customers.</content>
 <parameter name="filePath">c:\Users\quinn\Desktop\ESSolarAI\scope.txt
