@@ -405,22 +405,54 @@ class FletUI:
             italic = False
             bgcolor = ft.Colors.WHITE
 
+        def _build_text(value, text_color=color, text_italic=italic):
+            """Create consistently styled, wrapping text blocks."""
+            return ft.Text(
+                value,
+                selectable=True,
+                size=16,
+                color=text_color,
+                italic=text_italic,
+                text_align=ft.TextAlign.LEFT,
+                no_wrap=False,
+            )
+
+        bubble = ft.Container(
+            bgcolor=bgcolor,
+            padding=ft.padding.symmetric(horizontal=16, vertical=12),
+            border_radius=12,
+            expand=True,
+        )
+
         # Special handling for editable question messages
         if text.startswith("Question") and message_type == "response" and not is_draft:
-            # Create editable question with edit button
             question_text = text
-            txt = ft.Text(question_text, selectable=True, size=16, color=color, italic=italic)
+            text_wrapper = ft.Container(content=_build_text(question_text), expand=True)
+
             edit_btn = ft.IconButton(
                 icon=ft.Icons.EDIT,
                 tooltip="Edit question",
-                on_click=lambda e: self._start_edit_question(e.control.parent, question_text)
+                on_click=lambda e, target=bubble, qtext=question_text: self._start_edit_question(target, qtext)
             )
-            content = ft.Row([txt, edit_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+            content = ft.Row(
+                controls=[text_wrapper, edit_btn],
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+                spacing=12,
+            )
         else:
-            # Standard text display
-            content = ft.Text(text, selectable=True, size=16, color=color, italic=italic)
+            # Standard text display kept inside a container so it wraps within the bubble
+            content = ft.Container(
+                content=_build_text(text),
+                expand=True,
+            )
 
-        return ft.Container(content=content, bgcolor=bgcolor, padding=ft.padding.all(10), border_radius=8)
+        bubble.content = ft.Column(
+            controls=[content],
+            tight=True,
+            spacing=4,
+        )
+        return bubble
 
     def _start_edit_question(self, container, original_text):
         """
@@ -431,20 +463,40 @@ class FletUI:
 
         Args:
             container (ft.Container): The message container to edit
-            original_text (str): Original question text
+            original_text (str): Original full message text (question + response)
         """
         if self.editing_block:
             return  # Already editing another message
 
         self.editing_block = container
 
-        # Extract the question content (remove prefixes)
-        if original_text.startswith("Question(s): "):
-            question_part = original_text[len("Question(s): "):]
-        elif original_text.startswith("Question: "):
-            question_part = original_text[len("Question: "):]
+        # Extract just the question part from the full message
+        # Format: "Question(s):\n- Question text\n\nResponse:\nResponse text"
+        question_part = ""
+        if "\n\nResponse:\n" in original_text:
+            # Split on the response separator and take the question part
+            parts = original_text.split("\n\nResponse:\n", 1)
+            question_section = parts[0]
+            
+            # Remove the "Question(s):" prefix if present
+            if question_section.startswith("Question(s):\n"):
+                question_part = question_section[len("Question(s):\n"):].strip()
+            elif question_section.startswith("Question:\n"):
+                question_part = question_section[len("Question:\n"):].strip()
+            else:
+                question_part = question_section.strip()
+            
+            # Remove leading dash if present (from formatted list)
+            if question_part.startswith("- "):
+                question_part = question_part[2:].strip()
         else:
-            question_part = original_text
+            # Fallback: try to extract question part using old method
+            if original_text.startswith("Question(s): "):
+                question_part = original_text[len("Question(s): "):]
+            elif original_text.startswith("Question: "):
+                question_part = original_text[len("Question: "):]
+            else:
+                question_part = original_text
 
         # Create editing controls
         edit_field = ft.TextField(value=question_part, expand=True, multiline=True, min_lines=1, max_lines=3)
@@ -472,7 +524,7 @@ class FletUI:
         Args:
             container (ft.Container): Message container being edited
             new_question (str): New question text from user input
-            original_text (str): Original question text for formatting reference
+            original_text (str): Original full message text (question + response)
         """
         if not new_question.strip():
             self._cancel_edit_question(container, original_text)
@@ -480,26 +532,57 @@ class FletUI:
 
         self.editing_block = None
 
-        # Reconstruct the full question text with proper formatting
-        if original_text.startswith("Question(s): "):
-            updated_text = f"Question(s): {new_question.strip()}"
-        elif original_text.startswith("Question: "):
-            updated_text = f"Question: {new_question.strip()}"
+        # Reconstruct the full message with updated question but original response
+        if "\n\nResponse:\n" in original_text:
+            # Split the original message to preserve the response part
+            parts = original_text.split("\n\nResponse:\n", 1)
+            question_section = parts[0]
+            response_part = parts[1] if len(parts) > 1 else ""
+            
+            # Update the question part
+            updated_question_section = f"Question(s):\n- {new_question.strip()}"
+            
+            # Reconstruct full message
+            updated_text = f"{updated_question_section}\n\nResponse:\n{response_part}"
         else:
-            updated_text = new_question.strip()
+            # Fallback: reconstruct using old method
+            updated_text = f"Question(s): {new_question.strip()}"
 
-        # Restore display controls with edit button
-        txt = ft.Text(updated_text, selectable=True, size=16, color=ft.Colors.BLACK, italic=False)
+        # Restore display controls with edit button and wrapping text
+        text_wrapper = ft.Container(
+            content=ft.Text(
+                updated_text,
+                selectable=True,
+                size=16,
+                color=ft.Colors.BLACK,
+                italic=False,
+                text_align=ft.TextAlign.LEFT,
+                no_wrap=False,
+            ),
+            expand=True,
+        )
         edit_btn = ft.IconButton(
             icon=ft.Icons.EDIT,
             tooltip="Edit question",
-            on_click=lambda e: self._start_edit_question(container, updated_text)
+            on_click=lambda e, target=container, txt=updated_text: self._start_edit_question(target, txt)
         )
-        container.content = ft.Row([txt, edit_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        container.content = ft.Row(
+            controls=[text_wrapper, edit_btn],
+            alignment=ft.MainAxisAlignment.START,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+            spacing=12,
+        )
 
-        # Notify external callback for processing
+        # Find the block_id for this container
+        block_id = None
+        for bid, ctrl in self.response_blocks.items():
+            if ctrl == container:
+                block_id = bid
+                break
+
+        # Notify external callback for processing with block_id
         if self.question_edit_callback:
-            self.question_edit_callback(new_question.strip())
+            self.question_edit_callback(new_question.strip(), block_id)
 
         self.page.update()
 
@@ -515,14 +598,30 @@ class FletUI:
         """
         self.editing_block = None
 
-        # Restore original display with edit button
-        txt = ft.Text(original_text, selectable=True, size=16, color=ft.Colors.BLACK, italic=False)
+        # Restore original display with edit button in same wrapped layout
+        text_wrapper = ft.Container(
+            content=ft.Text(
+                original_text,
+                selectable=True,
+                size=16,
+                color=ft.Colors.BLACK,
+                italic=False,
+                text_align=ft.TextAlign.LEFT,
+                no_wrap=False,
+            ),
+            expand=True,
+        )
         edit_btn = ft.IconButton(
             icon=ft.Icons.EDIT,
             tooltip="Edit question",
-            on_click=lambda e: self._start_edit_question(container, original_text)
+            on_click=lambda e, target=container, txt=original_text: self._start_edit_question(target, txt)
         )
-        container.content = ft.Row([txt, edit_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        container.content = ft.Row(
+            controls=[text_wrapper, edit_btn],
+            alignment=ft.MainAxisAlignment.START,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+            spacing=12,
+        )
         self.page.update()
 
     # ------------------------------------------------------------------- Thread Safety

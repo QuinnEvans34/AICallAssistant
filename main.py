@@ -93,7 +93,8 @@ class CallAssistApp:
         self.ui = FletUI(
             toggle_callback=self.toggle_live,           # Start/stop live audio
             manual_callback=self.manual_input,          # Manual text input
-            name_callback=self.on_caller_name_change    # Caller name updates
+            name_callback=self.on_caller_name_change,   # Caller name updates
+            question_edit_callback=self.on_question_edit # Question editing
         )
 
         # Initialize question detection with callback for detected questions
@@ -207,6 +208,30 @@ class CallAssistApp:
             question (str): Manually entered question text
         """
         self.response_manager.add_question(question)
+
+    def on_question_edit(self, edited_question, block_id=None):
+        """
+        Handle edited questions from the user interface.
+
+        Treats the edited question as an update to an existing question,
+        regenerating the response for the same conversation block.
+
+        Args:
+            edited_question (str): The edited question text
+            block_id (str, optional): ID of the response block to update
+        """
+        if block_id:
+            # For edited questions, we want to update the existing response block
+            # Create a payload that includes the block_id for replacement
+            payload = {
+                "question": edited_question,
+                "block_id": block_id,
+                "replace": True
+            }
+            self.response_manager.add_question(payload)
+        else:
+            # Fallback to treating as new question
+            self.response_manager.add_question(edited_question)
 
     def on_caller_name_change(self, name):
         """

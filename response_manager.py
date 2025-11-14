@@ -293,6 +293,11 @@ class ResponseManager:
             if payload is None:  # Sentinel value for shutdown
                 break
 
+            # Extract block_id if provided (for question editing)
+            existing_block_id = None
+            if isinstance(payload, dict):
+                existing_block_id = payload.get("block_id")
+
             # Extract and normalize questions
             questions, meta = self._extract_questions(payload)
             asr_conf = meta.get("asr_conf", 0.75)
@@ -349,8 +354,8 @@ class ResponseManager:
                 print("ResponseManager: no matching entries for questions -> skipping response.")
                 continue
 
-            # Generate unique bundle ID for tracking
-            bundle_id = self._bundle_id(qa_bundle)
+            # Generate unique bundle ID for tracking, or use existing for edits
+            bundle_id = existing_block_id if existing_block_id else self._bundle_id(qa_bundle)
 
             # Report average confidence if callback provided
             if self.confidence_callback and score_rows:
@@ -370,7 +375,7 @@ class ResponseManager:
                     None,
                     is_draft=True,
                     bundle_id=bundle_id,
-                    replace=False,
+                    replace=bool(existing_block_id),  # Replace if editing existing
                 )
                 threading.Thread(
                     target=self._llm_response,
@@ -384,11 +389,12 @@ class ResponseManager:
                 used_name = bool(customer_name and fallback)
                 if used_name:
                     fallback = f"{customer_name}, {fallback}"
-                self._emit_response(qa_bundle, fallback, bundle_id=bundle_id, replace=False)
+                self._emit_response(qa_bundle, fallback, bundle_id=bundle_id, replace=bool(existing_block_id))
                 self._record_name_usage(used_name)
 
-            # Remember questions for duplicate detection
-            self._remember_questions([item["question"] for item in qa_bundle])
+            # Remember questions for duplicate detection (skip for edits to avoid marking as duplicate)
+            if not existing_block_id:
+                self._remember_questions([item["question"] for item in qa_bundle])
 
     # ------------------------------------------------------------- LLM Response Generation
 
