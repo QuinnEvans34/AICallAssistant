@@ -36,12 +36,15 @@ import re
 import threading
 import time
 from collections import OrderedDict, deque
-from pathlib import Path
+from datetime import datetime
+from typing import List, Dict, Any
 from queue import Empty, Queue
 
 import numpy as np
 from rapidfuzz import fuzz
 from sentence_transformers import SentenceTransformer, util
+
+from exception_logger import exception_logger
 
 
 class IntentClassifier:
@@ -170,6 +173,8 @@ class ResponseManager:
         # Question processing queue and thread
         self.question_q = Queue()
         self.stop_event = threading.Event()
+        self.processing_lock = threading.Lock()
+        self._active_processing = 0
         self.thread = threading.Thread(target=self._process_loop, daemon=True)
         self.thread.start()
 
@@ -221,7 +226,9 @@ class ResponseManager:
         except Exception as exc:  # pragma: no cover
             print(f"Semantic embedder disabled: {exc}")
             self.embedder = None
-        self.cache_embeddings = OrderedDict()  # For semantic similarity
+        # Response logging buffer
+        self.responses_buffer: List[Dict[str, Any]] = []
+        self.response_lock = threading.Lock()
 
     # ----------------------------------------------------------------- Public API
 
@@ -274,6 +281,87 @@ class ResponseManager:
         self.question_q.put(None)  # Sentinel to wake thread
         self.thread.join(timeout=1.0)
 
+    def reset_for_call(self):
+        """
+        Reset internal state for a new call session.
+
+        Clears caches, context, and reporting buffers so each call
+        generates isolated analytics.
+        """
+        self._ensure_response_logging_state()
+        self._ensure_processing_tracking()
+
+        with self.context_lock:
+            self.context.clear()
+
+        with self.cache_lock:
+            self.response_cache.clear()
+
+        with self.question_lock:
+            self.recent_questions.clear()
+            self.question_order.clear()
+
+        with self.response_lock:
+            self.responses_buffer.clear()
+
+        with self.name_usage_lock:
+            self.name_use_count = 0
+            self.last_response_used_name = False
+
+        self.bundle_index = 0
+        self._drain_queue(self.question_q)
+
+    def wait_until_idle(self, timeout: float = 3.0) -> bool:
+        """
+        Wait for the processing loop to finish outstanding questions.
+
+        Args:
+            timeout (float): Maximum seconds to wait
+
+        Returns:
+            bool: True if idle before timeout, False otherwise.
+        """
+        self._ensure_processing_tracking()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.stop_event.is_set():
+                return True
+            if self.question_q.empty():
+                with self.processing_lock:
+                    if self._active_processing == 0:
+                        return True
+            time.sleep(0.05)
+        return False
+
+    def _drain_queue(self, queue_obj: Queue):
+        """Remove all items from an internal queue without blocking."""
+        while True:
+            try:
+                queue_obj.get_nowait()
+            except Empty:
+                break
+
+    def _ensure_response_logging_state(self):
+        """
+        Ensure response logging buffers/locks exist.
+
+        Guards against partially-initialized instances when older objects
+        are reused across reloads.
+        """
+        if not hasattr(self, "responses_buffer"):
+            self.responses_buffer = []
+        if not hasattr(self, "response_lock"):
+            self.response_lock = threading.Lock()
+
+    def _ensure_processing_tracking(self):
+        """
+        Ensure processing tracking primitives exist.
+        """
+        if not hasattr(self, "processing_lock"):
+            self.processing_lock = threading.Lock()
+        if not hasattr(self, "_active_processing"):
+            self._active_processing = 0
+
     # --------------------------------------------------------------- Main Processing
 
     def _process_loop(self):
@@ -283,6 +371,7 @@ class ResponseManager:
         Continuously processes questions from the queue, handling extraction,
         deduplication, matching, and response generation. Runs until stopped.
         """
+        self._ensure_processing_tracking()
         while not self.stop_event.is_set():
             try:
                 # Get next question payload with timeout
@@ -293,108 +382,114 @@ class ResponseManager:
             if payload is None:  # Sentinel value for shutdown
                 break
 
-            # Extract block_id if provided (for question editing)
-            existing_block_id = None
-            if isinstance(payload, dict):
-                existing_block_id = payload.get("block_id")
+            with self.processing_lock:
+                self._active_processing += 1
+            try:
+                # Extract block_id if provided (for question editing)
+                existing_block_id = None
+                if isinstance(payload, dict):
+                    existing_block_id = payload.get("block_id")
 
-            # Extract and normalize questions
-            questions, meta = self._extract_questions(payload)
-            asr_conf = meta.get("asr_conf", 0.75)
+                # Extract and normalize questions
+                questions, meta = self._extract_questions(payload)
+                asr_conf = meta.get("asr_conf", 0.75)
 
-            # Remove duplicates within this batch and against history
-            deduped = []
-            for question in questions:
-                if not self._is_duplicate_question(question, deduped):
-                    deduped.append(question)
-            questions = deduped
-            if not questions:
-                continue
+                # Remove duplicates within this batch and against history
+                deduped = []
+                for question in questions:
+                    if not self._is_duplicate_question(question, deduped):
+                        deduped.append(question)
+                questions = deduped
+                if not questions:
+                    continue
 
-            # Process each question through matcher and classifier
-            qa_bundle = []
-            flattened_answers = []
-            score_rows = []
+                # Process each question through matcher and classifier
+                qa_bundle = []
+                flattened_answers = []
+                score_rows = []
 
-            for raw_question in questions:
-                # Find matching Q&A pairs
-                matches = self.matcher.match(raw_question)
-                intent, intent_conf = self.intent_classifier.classify(raw_question)
-                match_conf = matches[0]["score"] / 100.0 if matches else 0.4
+                for raw_question in questions:
+                    # Find matching Q&A pairs
+                    matches = self.matcher.match(raw_question)
+                    intent, intent_conf = self.intent_classifier.classify(raw_question)
+                    match_conf = matches[0]["score"] / 100.0 if matches else 0.4
 
-                if matches:
-                    top_match = matches[0]
-                    canonical_question = top_match["question"]
-                    answers = [match["answer"] for match in matches[:1]]
-                    qa_bundle.append({
-                        "question": canonical_question,
-                        "answers": answers,
-                        "score": top_match.get("score", 0),
-                        "intent": intent,
-                    })
-                    flattened_answers.extend(answers)
-                else:
-                    # No matches found
-                    qa_bundle.append({
+                    if matches:
+                        top_match = matches[0]
+                        canonical_question = top_match["question"]
+                        answers = [match["answer"] for match in matches[:1]]
+                        qa_bundle.append({
+                            "question": canonical_question,
+                            "answers": answers,
+                            "score": top_match.get("score", 0),
+                            "intent": intent,
+                        })
+                        flattened_answers.extend(answers)
+                    else:
+                        # No matches found
+                        qa_bundle.append({
+                            "question": raw_question,
+                            "answers": [],
+                            "score": 0,
+                            "intent": intent,
+                        })
+
+                    # Calculate combined confidence score
+                    combined = self._combined_confidence(asr_conf, intent_conf, match_conf)
+                    score_rows.append({
                         "question": raw_question,
-                        "answers": [],
-                        "score": 0,
                         "intent": intent,
+                        "combined": combined
                     })
 
-                # Calculate combined confidence score
-                combined = self._combined_confidence(asr_conf, intent_conf, match_conf)
-                score_rows.append({
-                    "question": raw_question,
-                    "intent": intent,
-                    "combined": combined
-                })
+                if not qa_bundle:
+                    print("ResponseManager: no matching entries for questions -> skipping response.")
+                    continue
 
-            if not qa_bundle:
-                print("ResponseManager: no matching entries for questions -> skipping response.")
-                continue
+                # Generate unique bundle ID for tracking, or use existing for edits
+                bundle_id = existing_block_id if existing_block_id else self._bundle_id(qa_bundle)
 
-            # Generate unique bundle ID for tracking, or use existing for edits
-            bundle_id = existing_block_id if existing_block_id else self._bundle_id(qa_bundle)
+                # Report average confidence if callback provided
+                if self.confidence_callback and score_rows:
+                    avg_conf = float(np.mean([row["combined"] for row in score_rows]))
+                    try:
+                        self.confidence_callback(avg_conf)
+                    except Exception:
+                        pass  # Ignore callback errors
 
-            # Report average confidence if callback provided
-            if self.confidence_callback and score_rows:
-                avg_conf = float(np.mean([row["combined"] for row in score_rows]))
-                try:
-                    self.confidence_callback(avg_conf)
-                except Exception:
-                    pass  # Ignore callback errors
+                # Get current conversation context
+                context_snapshot = self._get_context()
 
-            # Get current conversation context
-            context_snapshot = self._get_context()
+                if self.use_llm:
+                    # Emit draft response and start LLM generation in background
+                    self._emit_response(
+                        qa_bundle,
+                        None,
+                        is_draft=True,
+                        bundle_id=bundle_id,
+                        replace=bool(existing_block_id),  # Replace if editing existing
+                    )
+                    threading.Thread(
+                        target=self._llm_response,
+                        args=(qa_bundle, flattened_answers, bundle_id, context_snapshot),
+                        daemon=True,
+                    ).start()
+                else:
+                    # Use fallback response without LLM
+                    fallback = self._compose_fallback(qa_bundle)
+                    customer_name = self._get_customer_name_if_allowed()
+                    used_name = bool(customer_name and fallback)
+                    if used_name:
+                        fallback = f"{customer_name}, {fallback}"
+                    self._emit_response(qa_bundle, fallback, bundle_id=bundle_id, replace=bool(existing_block_id))
+                    self._record_name_usage(used_name)
 
-            if self.use_llm:
-                # Emit draft response and start LLM generation in background
-                self._emit_response(
-                    qa_bundle,
-                    None,
-                    is_draft=True,
-                    bundle_id=bundle_id,
-                    replace=bool(existing_block_id),  # Replace if editing existing
-                )
-                threading.Thread(
-                    target=self._llm_response,
-                    args=(qa_bundle, flattened_answers, bundle_id, context_snapshot),
-                    daemon=True,
-                ).start()
-            else:
-                # Use fallback response without LLM
-                fallback = self._compose_fallback(qa_bundle)
-                customer_name = self._get_customer_name_if_allowed()
-                used_name = bool(customer_name and fallback)
-                if used_name:
-                    fallback = f"{customer_name}, {fallback}"
-                self._emit_response(qa_bundle, fallback, bundle_id=bundle_id, replace=bool(existing_block_id))
-                self._record_name_usage(used_name)
-
-            # Remember questions for duplicate detection (skip for edits to avoid marking as duplicate)
-            if not existing_block_id:
-                self._remember_questions([item["question"] for item in qa_bundle])
+                # Remember questions for duplicate detection (skip for edits to avoid marking as duplicate)
+                if not existing_block_id:
+                    self._remember_questions([item["question"] for item in qa_bundle])
+            finally:
+                with self.processing_lock:
+                    self._active_processing = max(0, self._active_processing - 1)
 
     # ------------------------------------------------------------- LLM Response Generation
 
@@ -475,6 +570,10 @@ class ResponseManager:
                 bundle_id=bundle_id,
                 replace=bool(bundle_id),
             )
+
+            # Log the response
+            self._log_response(qa_bundle, response, success, end_time - start_time)
+
         else:
             # Fallback to knowledge base answers
             fallback = " ".join(answers) if answers else "No matching response found."
@@ -487,12 +586,56 @@ class ResponseManager:
                 replace=bool(bundle_id),
             )
 
+            # Log the fallback response
+            self._log_response(qa_bundle, fallback, False, end_time - start_time)
+
         # Track name usage
         self._record_name_usage(bool(customer_name))
 
         # Update conversation context
         question_summary = " ".join(item["question"] for item in qa_bundle)
         self._update_context(question_summary)
+
+    def _log_response(self, qa_bundle: List[Dict], response_text: str, success: bool, latency: float):
+        """
+        Log a generated response for reporting.
+
+        Args:
+            qa_bundle: Question/answer bundle
+            response_text: Generated response text
+            success: Whether LLM generation was successful
+            latency: Response generation time in seconds
+        """
+        timestamp = datetime.now().isoformat()
+        question_text = " ".join(item.get("question", "") for item in qa_bundle)
+
+        self._ensure_response_logging_state()
+        with self.response_lock:
+            self.responses_buffer.append({
+                "timestamp": timestamp,
+                "question": question_text,
+                "answer": response_text,
+                "llm_latency": latency,
+                "success": success
+            })
+
+    def save_logs(self, call_dir: str):
+        """
+        Save response logs to file.
+
+        Args:
+            call_dir (str): Directory to save response logs
+        """
+        import os
+
+        responses_file = os.path.join(call_dir, "responses.json")
+        self._ensure_response_logging_state()
+        with self.response_lock:
+            try:
+                with open(responses_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.responses_buffer, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                exception_logger.log_exception(e, "response_manager", "Failed to save responses")
 
     # ------------------------------------------------------------- Question Processing
 

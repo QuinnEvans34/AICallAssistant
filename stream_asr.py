@@ -30,10 +30,13 @@ Dependencies:
 Author: Quinn Evans
 """
 
+import json
+import os
 import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from typing import Optional
 
 import numpy as np
@@ -44,6 +47,11 @@ try:  # Optional dependency for better VAD accuracy
     import webrtcvad  # type: ignore
 except Exception:  # pragma: no cover
     webrtcvad = None
+
+try:
+    import librosa
+except ImportError:
+    librosa = None
 
 # Audio processing constants
 SAMPLE_RATE = 16000  # Audio sample rate in Hz (16kHz standard for speech)
@@ -84,7 +92,7 @@ class StreamASR:
         current_speaker (str): Current detected speaker ("customer" or "waiting")
     """
 
-    def __init__(self, transcript_callback, speaker_callback=None):
+    def __init__(self, transcript_callback, speaker_callback=None, transcript_recorder=None):
         """
         Initialize the streaming ASR system.
 
@@ -94,9 +102,11 @@ class StreamASR:
         Args:
             transcript_callback (callable): Function to call with transcript text
             speaker_callback (callable, optional): Function to call on speaker changes
+            transcript_recorder (TranscriptRecorder, optional): Recorder for logging transcripts
         """
         self.partial_callback = transcript_callback
         self.speaker_callback = speaker_callback
+        self.transcript_recorder = transcript_recorder
 
         # Audio buffer configuration
         self.sample_rate = SAMPLE_RATE
@@ -130,6 +140,21 @@ class StreamASR:
         # Text deduplication state
         self._last_tail = ""  # Last portion of transcribed text
 
+        # Heartbeat and backlog tracking
+        self.call_id: Optional[str] = None
+        self.current_call_dir: Optional[str] = None
+        self.heartbeat_log_file: Optional[str] = None
+        self.heartbeat_lock = threading.Lock()
+        self.snapshot_backlog = 0
+        self.backlog_lock = threading.Lock()
+        self.suppress_speaker_indicator = False
+
+    def _init_executor(self):
+        """Initialize the transcription executor."""
+        if self.executor is not None:
+            self.executor.shutdown(wait=False)
+        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="whisper")
+
     def start_listening(self):
         """
         Start the audio capture and processing pipeline.
@@ -140,12 +165,7 @@ class StreamASR:
         This method is non-blocking and returns immediately while processing
         continues in background threads.
         """
-        # Clean up any existing thread pool
-        if self.executor is not None:
-            self.executor.shutdown(wait=False)
-
-        # Create new thread pool for transcription tasks
-        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="whisper")
+        self._init_executor()
 
         # Reset stop signal
         self.stop_event.clear()
@@ -167,6 +187,33 @@ class StreamASR:
         self.snapshot_thread = threading.Thread(target=self._snapshot_loop, daemon=True)
         self.record_thread.start()
         self.snapshot_thread.start()
+
+    def reset_for_call(self, call_id: str, call_dir: str):
+        """
+        Reset ASR state for a new call session.
+
+        Args:
+            call_id (str): Identifier for the call (e.g., call_YYYYMMDD_HHMMSS)
+            call_dir (str): Directory where call artifacts are stored
+        """
+        self.call_id = call_id
+        self.current_call_dir = call_dir
+        heartbeat_dir = os.path.join("logs", "heartbeat")
+        os.makedirs(heartbeat_dir, exist_ok=True)
+        self.heartbeat_log_file = os.path.join(heartbeat_dir, f"{call_id}.jsonl")
+
+        with self.buffer_lock:
+            self.audio_buffer[:] = 0
+            self.buffer_index = 0
+            self.samples_written = 0
+
+        self._last_tail = ""
+        self.energy_history.clear()
+        self.customer_cooldown_until = 0.0
+        self.current_speaker = "waiting"
+        self.snapshot_backlog = 0
+        self.stop_event.clear()
+        self.suppress_speaker_indicator = False
 
     def stop_listening(self):
         """
@@ -322,8 +369,53 @@ class StreamASR:
             snapshot = snapshot / peak
 
         # Submit for transcription in thread pool
-        if self.executor:
-            self.executor.submit(self._transcribe_snapshot, snapshot, time.time())
+        if self.executor is None:
+            self._init_executor()
+
+        enqueue_time = time.time()
+        self._increment_snapshot_backlog()
+        future = self.executor.submit(self._transcribe_snapshot, snapshot, enqueue_time)
+        future.add_done_callback(lambda _: self._decrement_snapshot_backlog())
+
+    def _increment_snapshot_backlog(self):
+        """Track outstanding snapshot tasks and log backpressure if needed."""
+        with self.backlog_lock:
+            self.snapshot_backlog += 1
+            backlog = self.snapshot_backlog
+        if backlog > 5:
+            self._log_backpressure_event(backlog)
+
+    def _decrement_snapshot_backlog(self):
+        with self.backlog_lock:
+            self.snapshot_backlog = max(0, self.snapshot_backlog - 1)
+
+    def _log_backpressure_event(self, queue_size: int):
+        event = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "event": "BACKPRESSURE",
+            "queue_size": queue_size,
+        }
+        self._write_heartbeat_event(event)
+
+    def _record_heartbeat(self, chunk_duration_ms: float, queue_latency_ms: float, processing_latency_ms: float):
+        event = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "chunk_duration_ms": round(chunk_duration_ms, 2),
+            "queue_latency_ms": round(queue_latency_ms, 2),
+            "processing_latency_ms": round(processing_latency_ms, 2),
+        }
+        self._write_heartbeat_event(event)
+
+    def _write_heartbeat_event(self, payload: dict):
+        if not self.heartbeat_log_file:
+            return
+        try:
+            with self.heartbeat_lock:
+                with open(self.heartbeat_log_file, "a", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False)
+                    f.write("\n")
+        except Exception as exc:
+            print(f"[ASR] Heartbeat log error: {exc}")
 
     # ------------------------------------------------------------------ Speaker Detection
 
@@ -418,6 +510,9 @@ class StreamASR:
         self.current_speaker = speaker
 
         # Notify callback of speaker change
+        if self.suppress_speaker_indicator:
+            return
+
         if callable(self.speaker_callback):
             try:
                 self.speaker_callback(speaker)
@@ -426,7 +521,7 @@ class StreamASR:
 
     # ------------------------------------------------------------------ Transcription
 
-    def _transcribe_snapshot(self, audio: np.ndarray, start_time: float):
+    def _transcribe_snapshot(self, audio: np.ndarray, enqueue_time: float):
         """
         Transcribe an audio snapshot using Whisper.
 
@@ -437,6 +532,9 @@ class StreamASR:
             audio (np.ndarray): Audio data to transcribe
             start_time (float): Timestamp when snapshot was taken
         """
+        processing_start = time.time()
+        queue_latency_ms = max(0.0, (processing_start - enqueue_time) * 1000.0)
+        chunk_duration_ms = (len(audio) / float(self.sample_rate)) * 1000.0
         try:
             # Run Whisper transcription
             segments, _ = self.model.transcribe(
@@ -456,15 +554,104 @@ class StreamASR:
             # Remove duplicate content from previous transcriptions
             fragment = self._deduplicate(text)
             if fragment:
+                # Log to transcript recorder if available
+                if self.transcript_recorder:
+                    self.transcript_recorder.log(fragment)
+
                 # Call callback with new text
                 self.partial_callback(fragment)
 
                 # Log latency for performance monitoring
-                latency = time.time() - start_time
+                latency = time.time() - enqueue_time
                 print(f"[ASR] snapshot latency {latency:.2f}s | text='{fragment}'")
 
         except Exception as exc:
             print(f"Transcription error: {exc}")
+        finally:
+            processing_end = time.time()
+            processing_latency_ms = max(0.0, (processing_end - processing_start) * 1000.0)
+            self._record_heartbeat(chunk_duration_ms, queue_latency_ms, processing_latency_ms)
+
+    def playback(self, audio_file_path: str):
+        """
+        Process an audio file in playback mode instead of live audio.
+
+        Loads the audio file and processes it in chunks as if it were live audio,
+        but without playing sound or using the microphone. Useful for testing
+        and analysis of recorded calls.
+
+        Args:
+            audio_file_path (str): Path to the audio file to process
+
+        Raises:
+            ImportError: If librosa is not available
+            FileNotFoundError: If audio file doesn't exist
+            Exception: For other audio processing errors
+        """
+        if not librosa:
+            raise ImportError("librosa is required for audio file playback. Install with: pip install librosa")
+
+        print(f"[ASR] Starting playback mode for: {audio_file_path}")
+
+        self.stop_event.clear()
+        self._init_executor()
+        self.suppress_speaker_indicator = True
+
+        try:
+            # Load audio file
+            audio, sr = librosa.load(audio_file_path, sr=self.sample_rate, mono=True)
+            print(f"[ASR] Loaded audio: {len(audio)} samples at {sr}Hz")
+
+            # Convert to the format expected by our processing
+            audio = audio.astype(np.float32)
+
+            # Calculate chunk size for processing
+            chunk_samples = int(SNAPSHOT_SEC * self.sample_rate)
+
+            # Process audio in chunks
+            for i in range(0, len(audio), chunk_samples):
+                if self.stop_event.is_set():
+                    break
+
+                chunk = audio[i:i + chunk_samples]
+
+                # Pad last chunk if necessary
+                if len(chunk) < chunk_samples:
+                    chunk = np.pad(chunk, (0, chunk_samples - len(chunk)), 'constant')
+
+                # Process chunk as if it were live audio
+                self._process_playback_chunk(chunk)
+
+                # Sleep to simulate real-time processing
+                time.sleep(SNAPSHOT_SEC)
+
+            print("[ASR] Playback completed")
+
+        except Exception as e:
+            print(f"[ASR] Playback error: {e}")
+            raise
+        finally:
+            self.suppress_speaker_indicator = False
+            self._set_speaker("waiting")
+
+    def _process_playback_chunk(self, chunk: np.ndarray):
+        """
+        Process a chunk of audio from playback mode.
+
+        Simulates the live audio processing pipeline for file playback.
+
+        Args:
+            chunk (np.ndarray): Audio chunk to process
+        """
+        # Add chunk to rolling buffer (for consistency)
+        self._append_samples(chunk)
+
+        # Always assume customer is speaking during playback
+        # (could be enhanced with VAD if needed)
+        self._set_speaker("customer")
+
+        # Take a snapshot for transcription
+        self._take_snapshot()
 
     def _deduplicate(self, new_text: str) -> str:
         """

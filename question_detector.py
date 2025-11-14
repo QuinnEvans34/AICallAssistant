@@ -39,7 +39,11 @@ Author: Quinn Evans
 import re
 import threading
 import time
+from datetime import datetime
 from queue import Empty, Queue
+from typing import List, Dict, Any, Optional
+
+from exception_logger import exception_logger
 
 
 class QuestionDetector:
@@ -120,12 +124,26 @@ class QuestionDetector:
         self.flush_word_limit = 15      # Reduced for quicker flushing
         self.max_buffer_chars = 2000    # Shorter rolling window for real-time
 
+        # Reporting and logging buffers
+        self.detected_questions_buffer: List[Dict[str, Any]] = []
+        self.alignment_buffer: List[Dict[str, Any]] = []
+        self.recent_segments: List[str] = []  # Sliding window for alignment
+        self.max_recent_segments = 8  # Keep last N segments for alignment
+        self.buffer_lock = threading.Lock()
+        self.force_flush_event = threading.Event()
+        self._activity_lock = threading.Lock()
+        self._active_dispatch = 0
+
+        # Backpressure tracking
+        self.backpressure_count = 0
+
     def add_text(self, text: str):
         """
         Add text chunk to the processing queue.
 
         Accepts streaming text from speech recognition and queues it for
-        question detection processing.
+        question detection processing. Also maintains recent segments buffer
+        for alignment mapping.
 
         Args:
             text (str): Text chunk from speech transcript
@@ -136,6 +154,75 @@ class QuestionDetector:
         cleaned = text.strip()
         if cleaned:
             self.text_q.put(cleaned)
+
+            # Track detector backpressure when queue grows too large
+            if self.text_q.qsize() > 5:
+                self.backpressure_count += 1
+
+            # Maintain recent segments buffer for alignment
+            with self.buffer_lock:
+                self.recent_segments.append(cleaned)
+                if len(self.recent_segments) > self.max_recent_segments:
+                    self.recent_segments.pop(0)
+
+    def reset_for_call(self):
+        """
+        Reset detector state for a new call session.
+
+        Clears buffers, recent segments, and reporting data so each call
+        produces isolated logs.
+        """
+        self.buffer = ""
+        self.partial_wait_start = None
+        self.force_flush_event.clear()
+
+        with self.buffer_lock:
+            self.detected_questions_buffer.clear()
+            self.alignment_buffer.clear()
+            self.recent_segments.clear()
+
+        self.backpressure_count = 0
+        self._drain_queue(self.text_q)
+        self._drain_queue(self.question_q)
+
+    def flush_pending(self, timeout: float = 1.0):
+        """
+        Request an immediate flush of buffered text.
+
+        Signals the ingest loop to treat any remaining buffer contents
+        as complete so reporting captures trailing fragments.
+        """
+        self.force_flush_event.set()
+        deadline = time.time() + timeout
+        while self.force_flush_event.is_set() and time.time() < deadline:
+            time.sleep(0.01)
+
+    def wait_until_idle(self, timeout: float = 2.0) -> bool:
+        """
+        Wait until detector queues and dispatch loop are idle.
+
+        Args:
+            timeout (float): Maximum seconds to wait
+
+        Returns:
+            bool: True if idle before timeout, False otherwise.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.text_q.empty() and self.question_q.empty():
+                with self._activity_lock:
+                    if self._active_dispatch == 0:
+                        return True
+            time.sleep(0.05)
+        return False
+
+    def _drain_queue(self, queue_obj: Queue):
+        """Remove all items from the provided queue without blocking."""
+        while True:
+            try:
+                queue_obj.get_nowait()
+            except Empty:
+                break
 
     def stop(self):
         """
@@ -169,6 +256,9 @@ class QuestionDetector:
             except Empty:
                 # Check for stale partial questions during idle time
                 self._flush_stale_partial()
+                if self.force_flush_event.is_set():
+                    self._process_buffer(force=True)
+                    self.force_flush_event.clear()
                 continue
 
             if chunk is None:  # Shutdown sentinel
@@ -178,6 +268,9 @@ class QuestionDetector:
             self._append_chunk(chunk)
             force = self._should_flush(self.buffer)
             self._process_buffer(force=force)
+            if self.force_flush_event.is_set():
+                self._process_buffer(force=True)
+                self.force_flush_event.clear()
             self._flush_stale_partial()
 
         # Process any remaining buffer content before exit
@@ -224,6 +317,7 @@ class QuestionDetector:
 
         Processes extracted questions from the queue and calls the
         question callback with appropriate payload formatting.
+        Also logs detected questions and creates alignment mappings.
         """
         while not self.stop_event.is_set():
             try:
@@ -235,9 +329,24 @@ class QuestionDetector:
                 break
 
             if questions:
-                # Format payload for response manager
-                payload = {"questions": questions, "asr_conf": 0.8}
-                self.question_callback(payload)
+                with self._activity_lock:
+                    self._active_dispatch += 1
+                try:
+                    # Log detected questions for reporting
+                    self._log_detected_questions(questions)
+
+                    # Create alignment mapping
+                    self._create_alignment_mapping(questions)
+
+                    # Format payload for response manager
+                    payload = {"questions": questions, "asr_conf": 0.8}
+                    try:
+                        self.question_callback(payload)
+                    except Exception as e:
+                        exception_logger.log_exception(e, "question_detector", "Failed to call question callback")
+                finally:
+                    with self._activity_lock:
+                        self._active_dispatch = max(0, self._active_dispatch - 1)
 
     # ------------------------------------------------------------------ Buffer Processing
 
@@ -507,29 +616,119 @@ class QuestionDetector:
 
         return lowered
 
-    def _is_complete_question(self, text: str) -> bool:
+    def save_logs(self, call_dir: str):
         """
-        Determine if text forms a complete, meaningful question.
-
-        Requires minimum length and question-like characteristics.
+        Save detected questions and alignment data to files.
 
         Args:
-            text (str): Text to evaluate
+            call_dir (str): Directory to save log files
+        """
+        import os
+        import json
+
+        # Save detected questions
+        questions_file = os.path.join(call_dir, "detected_questions.json")
+        with self.buffer_lock:
+            try:
+                with open(questions_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.detected_questions_buffer, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                exception_logger.log_exception(e, "question_detector", "Failed to save detected questions")
+
+        # Save alignment data
+        alignment_file = os.path.join(call_dir, "alignment.json")
+        with self.buffer_lock:
+            try:
+                with open(alignment_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.alignment_buffer, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                exception_logger.log_exception(e, "question_detector", "Failed to save alignment data")
+
+    def _log_detected_questions(self, questions: List[str]):
+        """
+        Log detected questions for reporting.
+
+        Args:
+            questions (List[str]): List of detected question texts
+        """
+        timestamp = datetime.now().isoformat()
+
+        with self.buffer_lock:
+            for question in questions:
+                # Estimate confidence based on question characteristics
+                confidence = self._estimate_question_confidence(question)
+
+                self.detected_questions_buffer.append({
+                    "timestamp": timestamp,
+                    "question": question,
+                    "confidence": confidence
+                })
+
+    def _create_alignment_mapping(self, questions: List[str]):
+        """
+        Create alignment mapping between detected questions and source segments.
+
+        Args:
+            questions (List[str]): List of detected question texts
+        """
+        with self.buffer_lock:
+            for question in questions:
+                if self.recent_segments:
+                    # Calculate alignment score using fuzzy matching
+                    combined_segments = " ".join(self.recent_segments)
+                    alignment_score = self._calculate_alignment_score(question, combined_segments)
+
+                    self.alignment_buffer.append({
+                        "detected_question": question,
+                        "confidence": self._estimate_question_confidence(question),
+                        "source_segments": self.recent_segments.copy(),
+                        "alignment_score": alignment_score
+                    })
+
+    def _estimate_question_confidence(self, question: str) -> float:
+        """
+        Estimate confidence score for a detected question.
+
+        Args:
+            question (str): Question text to evaluate
 
         Returns:
-            bool: True if text is a complete question
+            float: Confidence score between 0.0 and 1.0
         """
-        if not text:
-            return False
+        if not question:
+            return 0.0
 
-        stripped = text.strip()
-        if not stripped:
-            return False
+        confidence = 0.5  # Base confidence
 
-        # Explicit question mark indicates completeness
-        if stripped.endswith("?"):
-            return True
+        # Higher confidence for explicit question marks
+        if question.strip().endswith("?"):
+            confidence += 0.2
 
-        # Minimum length and question-like structure required
-        words = stripped.split()
-        return len(words) >= 3 and self._looks_like_question(stripped)
+        # Higher confidence for question keywords
+        words = question.lower().split()
+        if words and words[0] in self.leading_keywords:
+            confidence += 0.2
+
+        # Higher confidence for longer questions
+        if len(words) >= 4:
+            confidence += 0.1
+
+        return min(1.0, confidence)
+
+    def _calculate_alignment_score(self, question: str, segments_text: str) -> float:
+        """
+        Calculate alignment score between question and source segments.
+
+        Args:
+            question (str): Detected question
+            segments_text (str): Combined source segments text
+
+        Returns:
+            float: Alignment score between 0.0 and 100.0
+        """
+        try:
+            from rapidfuzz import fuzz
+            return fuzz.partial_ratio(question.lower(), segments_text.lower())
+        except ImportError:
+            # Fallback if rapidfuzz not available
+            return 50.0

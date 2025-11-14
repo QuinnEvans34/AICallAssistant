@@ -22,6 +22,7 @@ Author: Quinn Evans
 
 import json
 import os
+import time
 
 from ui_flet import FletUI
 from stream_asr import StreamASR
@@ -29,6 +30,10 @@ from question_detector import QuestionDetector
 from response_manager import ResponseManager
 from matcher import Matcher
 from llm import LLMManager
+from call_transcript_recorder import TranscriptRecorder
+from evaluation_report_builder import EvaluationReportBuilder
+from call_summary_generator import CallSummaryGenerator
+from exception_logger import exception_logger
 
 
 class CallAssistApp:
@@ -89,12 +94,18 @@ class CallAssistApp:
         self.llm = LLMManager(self.persona)   # LLM interface for response generation
         self.caller_name = ""  # Current caller's name for personalization
 
+        # Initialize reporting and logging components
+        self.transcript_recorder = TranscriptRecorder()
+        self.evaluation_builder = EvaluationReportBuilder()
+        self.summary_generator = CallSummaryGenerator(self.llm)
+
         # Initialize UI with callback functions for user interactions
         self.ui = FletUI(
             toggle_callback=self.toggle_live,           # Start/stop live audio
             manual_callback=self.manual_input,          # Manual text input
             name_callback=self.on_caller_name_change,   # Caller name updates
-            question_edit_callback=self.on_question_edit # Question editing
+            question_edit_callback=self.on_question_edit, # Question editing
+            test_call_callback=self.start_test_call     # Test call file selection
         )
 
         # Initialize question detection with callback for detected questions
@@ -116,8 +127,14 @@ class CallAssistApp:
         # Initialize audio streaming with callbacks
         self.asr = StreamASR(
             transcript_callback=self.on_partial_transcript,  # Partial transcript updates
-            speaker_callback=self.ui.update_speaker_status   # Speaker detection updates
+            speaker_callback=self.ui.update_speaker_status,   # Speaker detection updates
+            transcript_recorder=self.transcript_recorder      # Transcript logging
         )
+
+        # Runtime call tracking
+        self.call_dir = None
+        self.current_call_id = None
+        self.test_call_running = False
 
         # Reset transcript tracking state
         self._reset_transcript_tracking()
@@ -131,36 +148,19 @@ class CallAssistApp:
         """
         Toggle between live audio processing and idle modes.
 
-        When activating live mode:
-        - Starts audio streaming from microphone
-        - Resets response manager state
-        - Sends initial greeting
-        - Updates UI status
-
-        When deactivating live mode:
-        - Stops audio streaming
-        - Updates UI status
-        - Resets transcript tracking
-
-        This method is called by the UI toggle button.
+        When activating live mode: starts a new call with full reporting
+        When deactivating live mode: ends the current call and generates reports
         """
         print("Toggle live called")
         try:
             if self.live_mode:
-                # Deactivate live mode
-                self.asr.stop_listening()
-                self.live_mode = False
-                self.ui.update_status("Off")
-                self._reset_transcript_tracking()
+                # End current call
+                self.end_call()
             else:
-                # Activate live mode
-                self.response_manager.reset_name_usage()  # Reset personalization state
-                self._reset_transcript_tracking()         # Clear transcript history
-                self.asr.start_listening()                # Start audio capture
-                self.live_mode = True
-                self.ui.update_status("Live")
-                self._send_greeting()                     # Send initial greeting
+                # Start new call
+                self.start_call()
         except Exception as e:
+            exception_logger.log_exception(e, "main", "Error in toggle_live")
             print(f"Error in toggle_live: {e}")
 
     def on_partial_transcript(self, text):
@@ -350,6 +350,30 @@ class CallAssistApp:
         self._last_tokens = []
         self._last_partial = ""
 
+    def _create_call_directory(self):
+        """
+        Create a new directory for the current call logs.
+
+        Returns:
+            tuple[str, str]: (call_id, call_directory_path)
+        """
+        call_timestamp = time.strftime("%Y%m%d_%H%M%S")
+        call_id = f"call_{call_timestamp}"
+        call_dir = os.path.join("logs", call_id)
+        os.makedirs(call_dir, exist_ok=True)
+        self.call_dir = call_dir
+        self.current_call_id = call_id
+        return call_id, call_dir
+
+    def _reset_call_state(self):
+        """
+        Reset per-call component state so reporting data is isolated.
+        """
+        self.question_detector.reset_for_call()
+        self.response_manager.reset_for_call()
+        self.asr.reset_for_call(self.current_call_id, self.call_dir)
+        self._reset_transcript_tracking()
+
     def run(self):
         """
         Start the application main loop.
@@ -393,6 +417,137 @@ class CallAssistApp:
         self.asr.stop_listening()
         self.question_detector.stop()
         self.response_manager.stop()
+
+    def start_call(self):
+        """
+        Start a new live call session with full reporting.
+
+        Creates call directory, initializes all logging components,
+        and starts the live audio processing pipeline.
+        """
+        if self.test_call_running:
+            print("[CallAssist] Cannot start live call while a test call is running.")
+            return
+        # Create call directory and initialize reporting
+        call_id, call_dir = self._create_call_directory()
+        error_log_path = os.path.join(call_dir, "errors.log")
+        exception_logger.set_log_file(error_log_path)
+
+        self.transcript_recorder.start(call_dir)
+        self.evaluation_builder.start_call(call_dir)
+        self._reset_call_state()
+
+        # Start ASR
+        self.asr.start_listening()
+        self.live_mode = True
+        self.ui.update_status("Live")
+
+        # Send greeting
+        self._send_greeting()
+
+        print(f"[CallAssist] Started live call: {call_dir} ({call_id})")
+
+    def end_call(self):
+        """
+        End the current call and generate all reports.
+
+        Stops all processing, saves all logs, generates reports,
+        and opens the summary in browser.
+        """
+        if not self.call_dir:
+            return
+
+        call_dir = self.call_dir
+        print(f"[CallAssist] Ending call: {call_dir}")
+
+        # Stop all processing
+        self.live_mode = False
+        self.ui.update_status("Off")
+        self.asr.stop_listening()
+        self.question_detector.flush_pending()
+        self.question_detector.wait_until_idle()
+        self.response_manager.wait_until_idle()
+
+        # Update evaluation stats
+        transcript_count, word_count = self.transcript_recorder.get_transcript_count(), self.transcript_recorder.get_word_count()
+        self.evaluation_builder.set_transcript_stats(transcript_count, word_count)
+        self.evaluation_builder.set_question_stats(len(self.question_detector.detected_questions_buffer))
+        self.evaluation_builder.set_response_stats(
+            len(self.response_manager.responses_buffer),
+            [r.get("llm_latency", 0) for r in self.response_manager.responses_buffer]
+        )
+        self.evaluation_builder.metrics['detector_backpressure'] = self.question_detector.backpressure_count
+        self.evaluation_builder.end_call()
+
+        # Save all logs
+        self.transcript_recorder.save()
+        self.question_detector.save_logs(call_dir)
+        self.response_manager.save_logs(call_dir)
+        self.evaluation_builder.save_report()
+
+        # Generate summary
+        self.summary_generator.generate_summary(call_dir)
+
+        print(f"[CallAssist] Call ended. Summary available at: {os.path.join(call_dir, 'summary.html')}")
+
+        # Reset call context
+        self.call_dir = None
+        self.current_call_id = None
+
+
+    def start_test_call(self, audio_file_path: str):
+        """
+        Start a test call using a pre-recorded audio file.
+
+        Processes the audio file as if it were a live call, generating
+        all the same reports and logs for analysis.
+
+        Args:
+            audio_file_path (str): Path to the audio file to process
+        """
+        if not os.path.exists(audio_file_path):
+            raise FileNotFoundError(f"Audio file not found: {audio_file_path}")
+        if self.live_mode:
+            raise RuntimeError("Cannot run a test call while live mode is active.")
+        if self.test_call_running:
+            print("[CallAssist] Test call already running.")
+            return
+
+        self.test_call_running = True
+        call_id, call_dir = self._create_call_directory()
+
+        # Copy audio file for reference
+        import shutil
+        audio_copy_path = os.path.join(call_dir, "raw_audio.wav")
+        try:
+            shutil.copy2(audio_file_path, audio_copy_path)
+        except Exception as e:
+            print(f"Warning: Could not copy audio file: {e}")
+
+        # Set up error logging
+        error_log_path = os.path.join(call_dir, "errors.log")
+        exception_logger.set_log_file(error_log_path)
+
+        # Initialize reporting components
+        self.transcript_recorder.start(call_dir)
+        self.evaluation_builder.start_call(call_dir)
+        self._reset_call_state()
+
+        self.ui.update_status("Test")
+        print(f"[CallAssist] Starting test call {call_id} with: {audio_file_path}")
+
+        # Start playback processing
+        try:
+            self.asr.playback(audio_file_path)
+            print("[CallAssist] Playback completed, generating reports...")
+        except Exception as e:
+            exception_logger.log_exception(e, "main", f"Test call failed: {audio_file_path}")
+            raise
+        finally:
+            try:
+                self.end_call()
+            finally:
+                self.test_call_running = False
 
 
 # Application entry point

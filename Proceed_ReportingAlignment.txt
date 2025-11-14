@@ -1,0 +1,298 @@
+# =============================================================================
+# CallAssist Reporting + Alignment System — Implementation Specification
+# =============================================================================
+# This file instructs Copilot/Codex EXACTLY how to implement the new reporting,
+# alignment, and playback testing features inside the existing CallAssist codebase.
+# =============================================================================
+
+
+=========================================================
+SECTION 1 — GOALS
+=========================================================
+
+Add a complete reporting pipeline including:
+
+1. transcript.json                       (raw ASR segments, customer-only)
+2. detected_questions.json                (final extracted questions)
+3. responses.json                         (answers generated)
+4. alignment.json                          (mapping raw text → detected questions)
+5. evaluation_report.json                 (performance stats)
+6. summary.html                           (human-readable summary in browser)
+7. New “Run Test Call” playback mode      (process audio file silently, no mic)
+
+These features integrate with existing “Start Call” and “End Call” workflow.
+
+
+=========================================================
+SECTION 2 — CALL FOLDER STRUCTURE
+=========================================================
+
+Each call (live or test) must save logs to:
+
+logs/call_YYYYMMDD_HHMM/
+
+Create these files at end of call:
+
+    transcript.json
+    detected_questions.json
+    responses.json
+    alignment.json
+    evaluation_report.json
+    summary.json
+    summary.html
+    errors.log   (from exception_logger)
+    raw_audio.wav (optional copy of playback file)
+
+
+=========================================================
+SECTION 3 — TRANSCRIPT RECORDING
+=========================================================
+
+Module: call_transcript_recorder.py
+
+Implement class TranscriptRecorder:
+
+- Methods:
+  start(call_dir)
+  log(text)
+  save()
+
+- transcript.json format:
+[
+  {"timestamp": "<HH:MM:SS>", "text": "raw ASR string"},
+  {"timestamp": "<HH:MM:SS>", "text": "raw ASR string"},
+  ...
+]
+
+
+=========================================================
+SECTION 4 — DETECTED QUESTIONS LOG
+=========================================================
+
+In question_detector:
+
+Whenever a question is finalized, append to:
+
+detected_questions_buffer.append({
+    "timestamp": now(),
+    "question": question_text,
+    "confidence": confidence_score
+})
+
+Save at end_call into:
+
+detected_questions.json
+
+
+=========================================================
+SECTION 5 — RESPONSES LOG
+=========================================================
+
+In response_manager, when an LLM answer is finished:
+
+responses_buffer.append({
+    "timestamp": now(),
+    "question": question,
+    "answer": final_answer_text,
+    "llm_latency": response_time
+})
+
+Save at end_call to:
+
+responses.json
+
+
+=========================================================
+SECTION 6 — ALIGNMENT MAPPING (alignment.json)
+=========================================================
+
+Purpose:
+Show which raw ASR segments produced each detected question.
+
+In question_detector:
+
+1. Maintain a sliding window:
+   recent_segments = last N raw ASR strings (e.g., last 5–8)
+
+2. When a question is finalized:
+
+alignment_buffer.append({
+    "detected_question": question_text,
+    "confidence": confidence_score,
+    "source_segments": recent_segments,
+    "alignment_score": rapidfuzz.fuzz.partial_ratio(
+        question_text.lower(),
+        " ".join(recent_segments).lower()
+    )
+})
+
+At end_call:
+Save alignment_buffer to alignment.json
+
+Example entry:
+{
+  "detected_question": "How long does installation take?",
+  "confidence": 0.92,
+  "source_segments": [
+    "How long does installation take?",
+    "long as installation take."
+  ],
+  "alignment_score": 87
+}
+
+
+=========================================================
+SECTION 7 — EVALUATION REPORT (evaluation_report.json)
+=========================================================
+
+Implement evaluation_report_builder.py
+
+At end_call, compute:
+
+{
+  "total_transcript_segments": N,
+  "total_words_transcribed": word_count,
+  "total_questions_detected": len(detected_questions_buffer),
+  "total_responses_generated": len(responses_buffer),
+  "avg_llm_latency_seconds": mean(latencies),
+  "max_llm_latency_seconds": max(latencies),
+  "clarification_events": count_clarifications,
+  "asr_dropouts_detected": heartbeat.asr_dropouts,
+  "detector_backpressure_events": detector.backpressure_count,
+  "call_duration_seconds": end_time - start_time
+}
+
+Save to evaluation_report.json
+
+
+=========================================================
+SECTION 8 — SUMMARY GENERATION
+=========================================================
+
+Module: call_summary_generator.py
+
+Inputs:
+- transcript.json
+- detected_questions.json
+- responses.json
+
+Output:
+- summary.json
+- summary.html (displayed in browser automatically)
+
+Summary LLM Prompt:
+“Provide a brief 2–3 sentence vague summary of the customer’s overall interest
+in solar based only on the transcript. Do not invent specifics.”
+
+summary.json structure:
+{
+  "summary_text": "...",
+  "questions": [...],
+  "answers": [...],
+  "transcript_file": "transcript.json"
+}
+
+summary.html:
+- Minimal styling
+- Show:
+    - “Call Summary”
+    - summary_text
+    - List of Questions
+    - List of Answers
+    - Full transcript
+
+
+=========================================================
+SECTION 9 — PLAYBACK MODE TESTING (Run Test Call)
+=========================================================
+
+Add a button to UI:
+
+[ Run Test Call ]
+
+On click:
+- open file picker (WAV/MP3)
+- call main.start_test_call(file_path)
+
+Implement ASR playback mode:
+
+1. librosa.load(file_path, sr=16000)
+2. Split audio into SAME CHUNKS as live ASR:
+   chunk_size = CHUNK_SEC * SAMPLE_RATE
+3. For each chunk:
+       audio_q.put(chunk)
+       sleep(CHUNK_SEC)
+4. Continue until the end of the file
+5. At end of playback, automatically call end_call()
+
+No audio plays out loud.
+No microphone is used.
+
+
+=========================================================
+SECTION 10 — MAIN.PY INTEGRATION
+=========================================================
+
+Add:
+
+main.start_call()
+main.end_call()
+main.start_test_call(file_path)
+
+start_call:
+- create call folder
+- start ASR live
+- start heartbeat
+- reset buffers
+- record start time
+
+start_test_call:
+- same as start_call
+- but use ASR in playback mode
+- pass file_path to ASR.playback(file_path)
+
+end_call:
+- stop ASR, heartbeat, detectors
+- save transcript.json
+- save detected_questions.json
+- save responses.json
+- save alignment.json
+- save evaluation_report.json
+- generate summary.html
+- open summary.html in browser
+
+
+=========================================================
+SECTION 11 — ERROR LOGGING
+=========================================================
+
+Integrate exception_logger module.
+
+Any exception in:
+- ASR
+- LLM
+- detector
+- UI callbacks
+
+Must write an entry to:
+
+logs/call_TIMESTAMP/errors.log
+
+Format:
+[time] [module] [error_message]
+[stacktrace]
+
+
+=========================================================
+SECTION 12 — THREAD-SAFETY REQUIREMENTS
+=========================================================
+
+- All buffers used in reporting (transcript, questions, responses, alignment)
+  must be protected with threading.Lock().
+- No file IO occurs inside the ASR or detector threads (only end_call writes).
+- summary.html generation must only happen after ASR threads stop.
+
+
+=========================================================
+END OF SPECIFICATION
+=========================================================

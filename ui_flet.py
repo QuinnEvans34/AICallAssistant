@@ -60,7 +60,7 @@ class FletUI:
         editing_block (ft.Container): Currently edited message container
     """
 
-    def __init__(self, toggle_callback, manual_callback, name_callback, question_edit_callback=None):
+    def __init__(self, toggle_callback, manual_callback, name_callback, question_edit_callback=None, test_call_callback=None):
         """
         Initialize the Flet UI with callback functions.
 
@@ -72,12 +72,14 @@ class FletUI:
             manual_callback (callable): Called when user submits manual question
             name_callback (callable): Called when caller name is updated
             question_edit_callback (callable, optional): Called when question is edited
+            test_call_callback (callable, optional): Called when user selects test call file
         """
         # Callback functions for external communication
         self.toggle_callback = toggle_callback
         self.manual_callback = manual_callback
         self.name_callback = name_callback
         self.question_edit_callback = question_edit_callback
+        self.test_call_callback = test_call_callback
 
         # UI component references
         self.page = None
@@ -122,6 +124,7 @@ class FletUI:
         # Create status and control components
         self.status_text = ft.Text("Status: Off", size=18, weight=ft.FontWeight.BOLD)
         self.toggle_button = ft.FilledButton("Start Live", on_click=lambda _: self.toggle_callback())
+        self.test_call_button = ft.ElevatedButton("Run Test Call", on_click=self._on_test_call_click)
 
         # Speaker detection indicator (red = customer speaking, gray = waiting)
         self.speaker_indicator = ft.Container(width=20, height=20, bgcolor=ft.Colors.GREY, border_radius=10)
@@ -149,7 +152,7 @@ class FletUI:
 
         # Layout arrangement
         header = ft.Row(
-            controls=[self.status_text, self.toggle_button, self.speaker_indicator, self.confidence_bar],
+            controls=[self.status_text, self.toggle_button, self.test_call_button, self.speaker_indicator, self.confidence_bar],
             wrap=True,
             spacing=12,
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -197,6 +200,25 @@ class FletUI:
         value = (self.name_entry.value or "").strip()
         self.name_callback(value)
 
+    def _manual_submit(self, _=None):
+        """
+        Handle manual question submission from the UI.
+
+        Sends the entered question text to the callback and clears the input.
+        """
+        text = (self.manual_entry.value or "").strip()
+        if not text:
+            return
+
+        if callable(self.manual_callback):
+            try:
+                self.manual_callback(text)
+            except Exception as exc:
+                print(f"[UI] Manual callback error: {exc}")
+
+        self.manual_entry.value = ""
+        self.page.update()
+
     def set_caller_name(self, name):
         """
         Update the caller name display in the UI.
@@ -209,21 +231,29 @@ class FletUI:
         self.name_entry.value = name or ""
         self.page.update()
 
-    def _manual_submit(self, _=None):
+    def _on_test_call_click(self, _):
         """
-        Handle manual question submission.
+        Handle test call button click by opening file picker dialog.
 
-        Extracts the question text, calls the manual callback,
-        and clears the input field.
+        Opens a file picker dialog to allow user to select an audio file
+        for testing. Calls the test_call_callback with the selected file path.
 
         Args:
-            _ : Event object (unused, defaults to None)
+            _ : Event object (unused)
         """
-        question = (self.manual_entry.value or "").strip()
-        if question:
-            self.manual_callback(question)
-            self.manual_entry.value = ""
-            self.page.update()
+        def _pick_file(e: ft.FilePickerResultEvent):
+            if e.files and len(e.files) > 0:
+                file_path = e.files[0].path
+                if self.test_call_callback:
+                    self.test_call_callback(file_path)
+
+        file_picker = ft.FilePicker(on_result=_pick_file)
+        self.page.overlay.append(file_picker)
+        self.page.update()
+        file_picker.pick_files(
+            allowed_extensions=["wav", "mp3", "flac", "m4a", "ogg"],
+            dialog_title="Select Audio File for Test Call"
+        )
 
     # ------------------------------------------------------------------- Status Updates
 
