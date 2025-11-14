@@ -1,0 +1,71 @@
+TITLE: VADDetector integration spec (enhanced speech gating)
+
+GOAL
+- Implement VADDetector as a flexible, pluggable speech detector:
+  - Initially: simple energy-based heuristic (no external libs).
+  - Later: drop-in replacement using WebRTC VAD or Silero without changing callers.
+
+SCOPE
+- Implement logic INSIDE VADDetector only.
+- SnapshotWorker will call IsSpeech() on frames.
+
+CLASS (already exists)
+- namespace cpp_asr
+  - class VADDetector
+    - struct Config {
+        int mode = 2;
+        float energy_threshold = 0;
+        int frame_duration_ms = 30;
+        int sample_rate_hz = 16000;
+      };
+    - explicit VADDetector(Config config = {});
+    - bool IsSpeech(const float* audio, size_t num_samples);
+
+CONSTRUCTOR / DESTRUCTOR
+
+- VADDetector(Config config):
+  - Store config in config_.
+  - For now, webrtc_handle_ stays nullptr (no external library).
+- ~VADDetector():
+  - No-op for now.
+  - Later this will release WebRTC resources.
+
+ENERGY-BASED HEURISTIC (initial implementation)
+
+IsSpeech(const float* audio, size_t num_samples):
+
+1) Guard checks:
+   - If audio == nullptr or num_samples == 0 → return false.
+
+2) Compute RMS energy:
+   - sum_sq = Σ (audio[i]^2) for i in [0..num_samples-1].
+   - rms = sqrt(sum_sq / num_samples).
+
+3) Threshold:
+   - effective_threshold:
+     - If config_.energy_threshold > 0 → use that.
+     - Else → use a default, e.g. 0.015f (tune empirically).
+   - return (rms >= effective_threshold).
+
+4) Thread-safety:
+   - config_ is immutable after construction, so no locking needed except if you later add mutable state.
+   - If you add adaptive thresholds later, protect mutable state with vad_mutex_.
+
+FUTURE WEBRTC INTEGRATION (documented but not implemented)
+- Later we can:
+  - Initialize a WebRTC VAD handle in the constructor (webrtc_handle_).
+  - In IsSpeech:
+    - Convert PCM float → int16_t at 16 kHz.
+    - Run WebRTC VAD on 10–30 ms frames.
+    - Return true if any frame is flagged as speech.
+- For now, leave TODO comments and use the energy heuristic only.
+
+FRAME ASSUMPTIONS
+
+- SnapshotWorker will feed frames corresponding to config_.frame_duration_ms at config_.sample_rate_hz.
+- For the heuristic, this is just a hint; we don’t enforce exact frame duration inside VADDetector.
+- The decision is per-call; SnapshotWorker will aggregate per-frame decisions into a speech_ratio.
+
+DO NOT
+- Do NOT introduce logging or disk I/O.
+- Do NOT throw exceptions from IsSpeech; always return true/false.

@@ -1,0 +1,137 @@
+TITLE: SnapshotWorker logic spec (enhanced VAD-gated snapshots)
+
+GOAL
+- Implement SnapshotWorker so that it:
+  - Periodically pulls short slices of audio from AudioRingBuffer.
+  - Runs VAD over each slice.
+  - When speech is detected, extracts a normalized snapshot window (~2.5 s) for ASR.
+  - Invokes the snapshot callback with that snapshot.
+  - Drives heartbeat metrics (queue depth, latency, etc.) via ASREngine, not from here directly.
+
+SCOPE
+- Implement logic INSIDE SnapshotWorker and the necessary support code in AudioRingBuffer.
+- Do NOT change public method signatures of SnapshotWorker.
+- Do NOT add external dependencies.
+
+CLASS (already exists)
+- namespace cpp_asr
+  - class SnapshotWorker
+    - struct Config {
+        int snapshot_duration_ms = 2000;
+        int snapshot_period_ms = 500;
+        float min_speech_ratio = 0.2f;
+      };
+    - SnapshotWorker(std::shared_ptr<AudioRingBuffer>, std::shared_ptr<VADDetector>, Config = {});
+    - void Start();
+    - void Stop();
+    - void SetSnapshotCallback(SnapshotCallback cb);
+
+WORKERLOOP BEHAVIOR
+
+1) Basic loop timing
+- WorkerLoop() runs while running_ == true:
+  while (running_) {
+    - Sleep for snapshot_period_ms.
+    - Attempt to read a new slice from the ring buffer.
+    - Run VAD on that slice.
+    - If VAD indicates speech, construct the full snapshot window.
+    - If snapshot_callback_ is set, call it.
+  }
+
+2) Computing sample counts
+- Use AudioRingBuffer::SampleRate() (16 kHz by default).
+- snapshot_duration_samples = sample_rate * snapshot_duration_ms / 1000.
+- slice_samples = sample_rate * snapshot_period_ms / 1000.
+- This means snapshots windows overlap (e.g., 2.0 s windows every 0.5 s).
+
+3) Reading from the ring buffer
+- For each loop iteration:
+  - Ask AudioRingBuffer for the last snapshot_duration_samples samples.
+    - Either:
+      - A) Use GetLatestSamples(snapshot_duration_samples) for simplicity, OR
+      - B) Use TryReadSlice; if not enough samples are available, skip this iteration.
+  - If there are fewer than snapshot_duration_samples samples buffered:
+    - Skip; continue loop.
+
+4) VAD gating
+- We want enhanced VAD behavior:
+  - Break the candidate snapshot window into frames of config.frame_duration_ms (from VADDetector config).
+  - For each frame:
+    - Call vad_->IsSpeech(frame_samples, frame_len).
+  - Compute speech_ratio = (#speech_frames / #total_frames).
+  - If speech_ratio >= config.min_speech_ratio:
+    - Treat the entire window as "speech-dominant".
+    - Proceed to snapshot construction.
+  - Else:
+    - Skip this window (no snapshot_callback_ call).
+
+5) Peak normalization
+- Before calling snapshot_callback_:
+  - Find abs max amplitude in the snapshot.
+  - If peak <= 0:
+    - Leave as is (silent).
+  - Else:
+    - Scale all samples by 0.95f / peak (keep headroom under full-scale).
+
+6) SnapshotCallback invocation
+- If snapshot_callback_ is non-null:
+  - Copy it under lock if necessary (to avoid races), or rely on it being immutable after SetSnapshotCallback.
+  - Call snapshot_callback_(snapshot_vector).
+- Do NOT hold ring buffer locks during the callback.
+- Do NOT hold VAD mutex during the callback.
+- WorkerLoop should:
+  - pull sample window
+  - release locks
+  - then call snapshot_callback_.
+
+7) Backpressure / heartbeat hooks (for later)
+- SnapshotWorker itself should NOT write heartbeat logs.
+- But we want enough information for ASREngine to track:
+  - snapshot timestamps
+  - queue depth
+  - processing latencies
+- To support this:
+  - Provide timing information via either:
+    - (Option A) Fields on SnapshotWorker accessible by ASREngine, or
+    - (Option B) Let ASREngine time HandleSnapshot() and log heartbeat there.
+  - For now, OPTION B: SnapshotWorker just calls snapshot_callback() with the audio.
+    - ASREngine will measure timing and log heartbeats, so SnapshotWorker does not know about heartbeat logger directly.
+
+8) Thread lifecycle
+- Start():
+  - If running_ is already true, do nothing.
+  - Set running_ = true.
+  - Launch worker_thread_ running WorkerLoop().
+- Stop():
+  - If running_ is already false, do nothing.
+  - Set running_ = false.
+  - Join worker_thread_ if joinable.
+
+9) Error handling
+- WorkerLoop must NOT throw:
+  - Wrap the entire loop body in try/catch.
+  - If any exception occurs:
+    - Swallow it, optionally call a handler provided by ASREngine later.
+    - Continue the loop (or set running_ = false if you want to fail fast – configurable, but default: keep going).
+- If ring_buffer_ or vad_ is null:
+  - WorkerLoop should simply sleep and continue without doing anything.
+
+AUDIO_RINGBUFFER EXPECTATIONS
+
+- AudioRingBuffer::PushSamples:
+  - Append samples at current write_index_, wrap around when reaching capacity.
+  - If count > capacity, keep only the last capacity samples.
+  - Update available_samples_ up to capacity.
+- AudioRingBuffer::GetLatestSamples(num_samples):
+  - If available_samples_ == 0, return empty.
+  - If num_samples >= available_samples_, return all buffered samples in correct chronological order.
+  - Else:
+    - Return the LAST num_samples samples (wrapping around as needed).
+- Thread-safety:
+  - Use mutex_ to protect buffer_, write_index_, available_samples_.
+  - These methods can be used from one producer (PushSamples) and multiple consumers (SnapshotWorker, debugging).
+
+DO NOT
+- Do NOT implement deduplication here (no transcript logic in SnapshotWorker).
+- Do NOT do any logging from SnapshotWorker.
+- Do NOT allocate large vectors inside the loop; reuse buffers where possible (but correctness > micro-optimization initially).

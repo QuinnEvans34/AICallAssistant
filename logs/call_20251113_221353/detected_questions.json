@@ -1,0 +1,22 @@
+[
+  {
+    "timestamp": "2025-11-13T22:14:04.221073",
+    "question": "Oh dude, okay let's see how much this is",
+    "confidence": 0.6
+  },
+  {
+    "timestamp": "2025-11-13T22:14:04.741951",
+    "question": "How much does solar cost",
+    "confidence": 0.7999999999999999
+  },
+  {
+    "timestamp": "2025-11-13T22:14:15.095308",
+    "question": "Sorry dude this is Sorry dude, this is crazy",
+    "confidence": 0.6
+  },
+  {
+    "timestamp": "2025-11-13T22:14:18.556376",
+    "question": "Wow, I just spent like two",
+    "confidence": 0.6
+  }
+]

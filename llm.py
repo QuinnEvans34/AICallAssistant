@@ -103,7 +103,8 @@ class LLMManager:
         qa_bundle: list[dict],
         context: list[str] = None,
         customer_name: str = None,
-        stream_callback: Callable[[str], None] = None
+        stream_callback: Callable[[str], None] = None,
+        prompt_override: str | None = None,
     ) -> Tuple[str, bool]:
         """
         Generate a conversational response using the LLM.
@@ -127,11 +128,15 @@ class LLMManager:
             Returns fallback message and False on generation failure.
             Streaming callback receives individual tokens for real-time display.
         """
-        if not qa_bundle:
+        if not qa_bundle and not prompt_override:
             return "No relevant information found.", False
 
         # Build optimized prompt
-        prompt, token_estimate = self._build_prompt(qa_bundle, context, customer_name)
+        if prompt_override:
+            prompt = prompt_override
+            token_estimate = len(prompt_override.split())
+        else:
+            prompt, token_estimate = self._build_prompt(qa_bundle, context, customer_name)
 
         # Initialize streaming state
         chunks: List[str] = []

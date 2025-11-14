@@ -1,0 +1,106 @@
+TITLE: WhisperWrapper implementation spec (enhanced, whisper.cpp backend)
+
+GOAL
+- Implement WhisperWrapper as a robust, low-latency wrapper around whisper.cpp (or equivalent C++ Whisper library), supporting:
+  - Model loading/unloading
+  - Blocking decode on short snapshots (~2.5s)
+  - An async future-based decode API for later use
+  - Optional segment callbacks
+  - Thread-safe access from SnapshotWorker / ASREngine
+
+SCOPE
+- Only implement logic INSIDE WhisperWrapper.
+- Do NOT change public method signatures in whisper_wrapper.h.
+- Do NOT add new public methods without a very good reason.
+- Do NOT depend on Python or any external runtime; this is pure C++.
+
+CLASS (already exists)
+- namespace cpp_asr
+  - class WhisperWrapper
+    - struct DecodeResult {
+        std::string transcript;
+        double average_logprob;
+        bool is_final;
+      };
+    - bool LoadModel(const std::string& model_path);
+    - bool IsLoaded() const;
+    - DecodeResult DecodeBlocking(const std::vector<float>& audio);
+    - std::future<DecodeResult> DecodeAsync(const std::vector<float>& audio);
+    - void SetSegmentCallback(std::function<void(const DecodeResult&)> callback);
+
+REQUIREMENTS
+
+1) Thread-safety
+- All public methods must be thread-safe.
+- Use the existing mutex_ member to protect internal state (model_path_, loaded_, whisper_context_, segment_callback_).
+- DecodeBlocking may be called concurrently from multiple threads; you must either:
+  - serialize access on the internal whisper context, OR
+  - allow a configurable concurrency (but default to serializing on mutex_ for now).
+
+2) LoadModel()
+- LoadModel(model_path):
+  - Save model_path into model_path_.
+  - Initialize the whisper.cpp context into whisper_context_.
+  - Set loaded_ = true on success; false on failure.
+  - If a model is already loaded:
+    - If the same path, return true.
+    - If a different path, clean up old context, then load the new model.
+  - Must NEVER throw; if anything fails, set loaded_ = false and return false.
+
+- Implementation note (you write the pseudo-calls, not real bindings):
+  - TODO comments where you’d call whisper_init_from_file / equivalent.
+  - Wrap all whisper library calls in try/catch; on failure, mark loaded_ = false.
+
+3) IsLoaded()
+- Simple, lock mutex_, return loaded_.
+
+4) DecodeBlocking()
+- Input: std::vector<float> audio, 16 kHz mono PCM.
+- If !loaded_:
+  - return DecodeResult{ "", 0.0, false }.
+
+- Steps:
+  1. Lock mutex_ (shared model context).
+  2. Configure whisper.cpp parameters for low-latency snapshot decoding:
+     - Single pass decode, no temperature sampling.
+     - English-only if your model is English; otherwise set language="en".
+     - No fancy beam search; you can use greedy decode for speed.
+  3. Run inference over the provided audio.
+  4. Build a DecodeResult:
+     - transcript: concatenated text of all decoded segments (strip leading/trailing whitespace).
+     - average_logprob: average of segment logprobs if available; else 0.0.
+     - is_final: true (these are standalone 2.5s windows).
+  5. Unlock mutex_ before any callback to avoid deadlocks.
+  6. If segment_callback_ is set:
+     - Call segment_callback_(result).
+
+- Robustness:
+  - Catch any exceptions thrown by the whisper library or std::bad_alloc.
+  - On failure, return DecodeResult{ "", 0.0, false } and DO NOT crash.
+  - Do NOT modify loaded_ on transient decode failures.
+
+5) DecodeAsync()
+- Wrap DecodeBlocking in std::async:
+  - return std::async(std::launch::async, [this, audio]() { return DecodeBlocking(audio); });
+- No extra logic; rely on DecodeBlocking to do the heavy lifting.
+
+6) SetSegmentCallback()
+- Store callback into segment_callback_ under mutex.
+- It must be safe to set/clear this while other threads are decoding.
+- Do NOT call callbacks while the mutex is held. DecodeBlocking should:
+  - copy the callback under lock, unlock, then invoke the callback.
+
+PERFORMANCE TARGETS (guidance)
+- Assume snapshots are 2.5 s at 16 kHz = 40,000 samples.
+- Per-snapshot decode should be comfortably under ~300 ms on a typical CPU core.
+- This means: avoid heavy beam search, multiple passes, and high resource configurations.
+
+TESTING EXPECTATIONS
+- With a stub whisper implementation, DecodeBlocking should:
+  - Return "[stub transcript]" and is_final=true (already present).
+- With a real implementation, it should return non-empty transcript for non-silent audio and still be safe on silence.
+
+DO NOT
+- Do NOT introduce any sleeps, artificial delays, or background worker threads inside WhisperWrapper.
+- Do NOT log to disk from WhisperWrapper directly. All logging should happen in ExceptionLogger / HeartbeatLogger if needed.
+- Do NOT introduce any Python-specific code or comments.

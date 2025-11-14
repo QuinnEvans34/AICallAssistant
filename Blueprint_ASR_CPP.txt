@@ -1,0 +1,187 @@
+Blueprint_ASR_CPP.txt
+
+Purpose
+Move the entire ASR pipeline (audio capture, buffering, VAD, chunking, Whisper decoding, deduplication, heartbeat, error handling) from Python into a C++ module for major speed improvements, lower latency, and more reliable continuous operation.
+
+Python will remain responsible for question detection, intent classification, logging, UI (Flet), LLM responses, and call lifecycle.
+
+C++ will expose a single streaming interface to Python.
+
+High-Level Architecture
+
+C++ Module (call it cpp_asr) will include:
+
+1. Audio Subsystem
+
+Continuous microphone capture running in its own thread.
+
+16kHz PCM float32 or int16 format.
+
+Circular buffer sized for 5 seconds minimum.
+
+Lock-free ring buffer preferred.
+
+2. Voice Activity Detection (VAD)
+
+Use WebRTC VAD integrated at C++ level.
+
+Requirements:
+
+Frame size: 20ms or 30ms.
+
+Sensitivity mode: 2.
+
+RMS energy threshold fallback.
+
+Output: Boolean is_customer_speaking.
+
+3. Rolling Buffer + Chunker
+
+Always maintain ~3 seconds of audio.
+
+Every 0.5 seconds, slice out a 2.5-second overlapping chunk.
+
+Normalize peak amplitude to avoid clipping.
+
+4. Whisper Inference Engine
+
+Use CTranslate2 C++ API directly:
+
+Load model tiny.en or small.en
+
+INT8 compute type
+
+Beam size = 1 (fastest)
+
+temperature = 0
+
+condition_on_previous_text = false
+
+Return only segments’ text concatenated.
+
+5. Text Deduplication Layer
+
+Dedup new transcripts against:
+
+tail_window (last 40 chars)
+
+if fully overlapping → ignore
+
+else → return only novel suffix
+
+6. Heartbeat Metrics
+
+For each chunk:
+
+chunk_processing_ms
+
+queue_delay_ms
+
+dedup_delta_chars
+
+transcript_length
+
+vad_state
+
+backlog_size
+
+Write to:
+
+logs/heartbeat/{call_id}.jsonl
+
+7. Error Handling
+
+Every Whisper failure must:
+
+Retry once with fallback decoding.
+
+If still failing:
+
+log an exception to errors.log
+
+write heartbeat event { "event": "SNAPSHOT_FAILED" }
+
+skip the chunk
+
+keep running
+
+8. Python Interface (pybind11)
+
+Expose:
+
+class ASR {
+public:
+    void start(std::function<void(std::string)> callback);
+    void stop();
+    void reset_for_call(std::string call_id);
+};
+
+
+Python receives clean partial transcripts via callback.
+
+9. Call Lifecycle
+
+At call start:
+
+ASR.reset_for_call(call_id)
+
+ASR.start(callback)
+
+At call end:
+
+ASR.stop()
+
+10. Test-Call Mode
+
+Expose new method:
+
+void process_audio_file(std::string wav_path, std::function<void(std::string)> callback);
+
+
+This reads audio, chunks it identically, and generates transcripts exactly like live mode.
+
+Used for evaluating real call recordings.
+
+Output Contract With Python
+
+All text sent to Python must be:
+
+Deduped
+
+Lower latency than Python version (<50ms from chunk completion)
+
+Free of overlapping fragments
+
+English only, no timestamps
+
+UTF-8 text only
+
+What Gets Deleted From Python
+
+stream_asr.py
+
+snapshot logic
+
+VAD logic
+
+dedup logic
+
+whisper decode logic
+
+heartbeat writer (moved into C++)
+
+What Remains in Python
+
+QuestionDetector
+
+ResponseManager
+
+LLM integration
+
+UI
+
+Logs & reporting
+
+Test-call evaluation builder
+
+Call start/stop orchestration

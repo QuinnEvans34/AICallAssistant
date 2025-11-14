@@ -1,0 +1,135 @@
+TITLE: Transcript deduplication & overlap spec (enhanced incremental ASR)
+
+GOAL
+- Implement robust incremental transcript handling inside ASREngine:
+  - Use overlapping snapshots from SnapshotWorker.
+  - Decode each snapshot with WhisperWrapper.
+  - Deduplicate overlapping text across snapshots.
+  - Enqueue only the “novel” portion as new transcript.
+  - Provide both:
+    - callback-based streaming (TranscriptCallback)
+    - polled transcript chunks via PollTranscript()
+
+SCOPE
+- Implement logic INSIDE ASREngine:
+  - HandleSnapshot()
+  - EnqueueTranscript()
+  - PollTranscript()
+  - ResetCall()
+- Do NOT change public signatures of ASREngine or C API.
+- Do NOT modify SnapshotWorker, VAD, or WhisperWrapper here.
+
+STATE FIELDS TO USE (in asr_engine.h, extend if needed)
+- std::string tail_text_;        // last N characters for dedup
+- size_t max_tail_chars_ = 200;  // keep small rolling window
+- size_t dedup_window_ = 40;     // overlap window for comparing new text
+- std::mutex transcript_mutex_;
+- std::queue<std::string> transcript_queue_;
+- TranscriptCallback transcript_callback_;
+
+HIGH-LEVEL PIPELINE
+
+1) SnapshotWorker calls ASREngine::HandleSnapshot(snapshot_audio)
+2) HandleSnapshot:
+   - Runs whisper_->DecodeBlocking(snapshot_audio).
+   - Gets DecodeResult (transcript).
+   - If transcript is empty or whitespace → ignore and return.
+   - Deduplicate against tail_text_.
+   - If novel_text not empty:
+       - Append to tail_text_ (rolling).
+       - EnqueueTranscript(novel_text).
+
+DEDUP DETAILS
+
+Algorithm (simple, robust):
+
+Let:
+- previous_tail = last min(dedup_window_, tail_text_.size()) chars of tail_text_
+- current = decoded transcript (trim leading/trailing whitespace)
+- We want to find the longest suffix of tail_text_ that matches a prefix of current (case-insensitive, ignoring trivial whitespace differences).
+
+Steps:
+
+1. Normalize both strings for comparison:
+   - lower-case
+   - collapse sequences of whitespace to a single space
+   - strip leading/trailing whitespace
+2. Let norm_tail = normalized(tail_text_), norm_cur = normalized(current)
+3. Only keep last K characters of norm_tail for matching, where K = dedup_window_.
+4. Find largest k in [1..K] such that:
+   norm_tail_suffix = last k chars of norm_tail
+   norm_cur_prefix = first k chars of norm_cur
+   and norm_tail_suffix == norm_cur_prefix
+5. The novel part (in normalized space) is norm_cur.substr(k).
+6. Map back to the original transcript:
+   - For simplicity and robustness, we can:
+     - Just take novel_text = current.substr(approximate_char_index), using the same k index in current after collapsing whitespace.
+     - Or (simpler) if dedup fails to align nicely, fallback:
+       - If norm_cur starts with norm_tail_suffix, we assume same char offset.
+       - Otherwise, if we can't compute a reliable index, treat the entire current as novel to avoid losing text.
+
+Practical simpler rule (acceptable):
+- Work directly on current and tail_text_ with:
+  - lower-case + whitespace collapse
+  - compute k
+  - then treat k as char index on the raw current string as best-effort; it's okay if we occasionally emit a few duplicate characters.
+
+TAIL MAINTENANCE
+
+- After extracting novel_text:
+  - Append novel_text to tail_text_.
+  - If tail_text_.size() > max_tail_chars_:
+    - Keep only last max_tail_chars_ characters.
+
+ENQUEUETRANSCRIPT
+
+- Input: std::string text (already deduped / novel)
+- If text is empty or whitespace → do nothing.
+- Under transcript_mutex_:
+  - transcript_queue_.push(text)
+- After releasing lock:
+  - If transcript_callback_ is set:
+    - Call transcript_callback_(text)
+
+POLLTRANSCRIPT
+
+- bool PollTranscript(std::string& out):
+  - Under transcript_mutex_:
+    - If queue empty → out.clear(); return false.
+    - else:
+      - out = queue.front(); queue.pop(); return true.
+
+RESETCALL
+
+- void ResetCall():
+  - Clear tail_text_.
+  - Clear transcript_queue_.
+  - Does NOT shut down Whisper or SnapshotWorker.
+  - Used when starting a new call/session.
+  - Must be safe to call between calls while the engine is idle.
+
+HANDLE_SNAPSHOT
+
+- void HandleSnapshot(const std::vector<float>& snapshot):
+  - This is called from SnapshotWorker thread.
+  - Steps:
+    1. If snapshot empty → return.
+    2. Record a start_time for latency measurement (ASREngine will later use this to log heartbeat).
+    3. Call whisper_->DecodeBlocking(snapshot).
+    4. If result.transcript is empty/whitespace → consider logging heartbeat with vad_detected=true but text empty; then return.
+    5. Deduplicate using the rules above to get novel_text.
+    6. If novel_text non-empty:
+       - Update tail_text_ and enqueue.
+    7. Optionally log heartbeat via HeartbeatLogger (queue depth, snapshot latency, decode time).
+  - Any exceptions: catch, log via ExceptionLogger, do NOT crash, and return.
+
+PERFORMANCE / STABILITY
+
+- Dedup must be O(N) with small N (we only look at last ~200 chars).
+- We care more about not dropping customer text than about occasionally emitting a few repeated words.
+- We want consistent incremental text that roughly matches what your Python ASR used to emit, but slightly cleaner.
+
+DO NOT
+- Do NOT implement any question detection here.
+- Do NOT trim content aggressively; basic whitespace trimming is OK.
+- Do NOT block for long in HandleSnapshot; keep it short (call decode, dedup, enqueue, exit).

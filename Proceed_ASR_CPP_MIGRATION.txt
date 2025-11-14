@@ -1,0 +1,142 @@
+Goal
+
+Implement a fully native C++ ASR engine that replaces all Python ASR logic. The C++ module must integrate with Python via pybind11 and expose a minimal API:
+
+void start(callback);
+void stop();
+void reset_for_call(call_id);
+void process_audio_file(path, callback);
+
+
+Use the full specification in Blueprint_ASR_CPP.txt as the authoritative reference.
+
+Required Components
+1. C++ Directory Layout
+asr_cpp/
+   CMakeLists.txt
+   include/
+       asr.hpp
+       audio_buffer.hpp
+       vad.hpp
+       whisper.hpp
+       dedup.hpp
+       heartbeat.hpp
+   src/
+       asr.cpp
+       audio_buffer.cpp
+       vad.cpp
+       whisper.cpp
+       dedup.cpp
+       heartbeat.cpp
+       bindings.cpp
+   models/
+       whisper-ct2-model/
+
+2. Audio Capture
+
+Use PortAudio or RtAudio.
+
+Format: 16kHz, mono, float32.
+
+Producer thread pushes frames into a lock-free circular buffer.
+
+3. VAD
+
+Integrate WebRTC VAD (C library).
+
+Frame = 20ms.
+
+Mode 2.
+
+Combine with RMS threshold.
+
+4. Chunker
+
+Every 500ms, pull 2.5 seconds from ring buffer.
+
+Peak-normalize.
+
+Only process if VAD says “customer.”
+
+5. Whisper Decoding
+
+Use CTranslate2 C++ API.
+
+Compute type: int8.
+
+Beam size: 1.
+
+No timestamps.
+
+Return single flat string.
+
+6. Dedup Logic
+
+Use rolling tail_window (last 40 chars).
+
+Algorithm:
+
+If new_text ends with tail → ignore.
+
+Else remove prefix overlap → emit suffix.
+
+7. Heartbeat System
+
+For every processed chunk, append JSON to:
+
+logs/heartbeat/{call_id}.jsonl
+
+
+Fields:
+
+timestamp
+chunk_ms
+processing_ms
+queue_delay
+dedup_chars
+vad_state
+backlog
+event  // optional
+
+8. Error Handling
+
+On decode fail:
+
+retry once
+
+if fail again → log exception, emit SNAPSHOT_FAILED event
+
+9. Python Bindings
+
+Use pybind11:
+
+PYBIND11_MODULE(cpp_asr, m) {
+   py::class_<ASR>(m, "ASR")
+      .def(py::init<>())
+      .def("start", &ASR::start)
+      .def("stop", &ASR::stop)
+      .def("reset_for_call", &ASR::reset_for_call)
+      .def("process_audio_file", &ASR::process_audio_file);
+}
+
+10. Python Integration Changes
+
+In main.py:
+
+replace StreamASR with cpp_asr.ASR()
+
+remove all Python-level ASR code
+
+keep callback signature identical
+
+ensure call directories are created before reset_for_call()
+
+Additional Requirements
+
+Must compile on Windows (MSVC), macOS, Linux.
+
+Use CMake.
+
+Utilize multi-threading for audio + ASR + heartbeat.
+
+Must maintain identical behavior to Python version.

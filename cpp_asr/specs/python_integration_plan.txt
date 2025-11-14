@@ -1,0 +1,122 @@
+TITLE: Python integration plan for cpp_asr (enhanced engine)
+
+GOAL
+- Define EXACTLY how Python will talk to the C++ ASR engine via c_api_bindings:
+  - init_asr_engine
+  - push_audio
+  - poll_transcript
+  - reset_call
+  - shutdown_asr_engine
+
+- Ensure behavior is compatible with the existing Python pipeline:
+  - Python capture thread pushes float32 PCM chunks.
+  - An ASR loop polls for incremental transcripts and passes them into QuestionDetector.
+  - Call boundaries (start/end calls) map cleanly onto ResetCall().
+
+C API SURFACE (already defined in c_api_bindings.h)
+
+extern "C" {
+  void init_asr_engine(const char* model_path);
+  void push_audio(const float* samples, int count);
+  bool poll_transcript(char* buffer, int buffer_size);
+  void reset_call();
+  void shutdown_asr_engine();
+}
+
+BINDINGS IMPLEMENTATION RULES
+
+- init_asr_engine(const char* model_path)
+  - Called once at process startup from Python.
+  - Locks g_engine_mutex.
+  - If model_path is non-null:
+    - Calls GetEngine().Initialize(model_path).
+  - Must be idempotent (calling multiple times is OK).
+  - Must not throw.
+
+- push_audio(const float* samples, int count)
+  - Called frequently from Python audio capture loop.
+  - If samples is null or count <= 0 → return.
+  - Locks g_engine_mutex, calls GetEngine().PushAudio(samples, count).
+  - No return value; Python doesn’t care whether the engine accepted the samples.
+  - Must NOT block for long; PushAudio should just enqueue into AudioRingBuffer.
+
+- poll_transcript(char* buffer, int buffer_size)
+  - Called from Python polling loop on the main thread or a worker thread.
+  - If buffer == nullptr or buffer_size <= 0 → return false.
+  - Locks g_engine_mutex, then:
+    - std::string transcript;
+    - if (!GetEngine().PollTranscript(transcript)):
+        buffer[0] = '\0';
+        return false;
+    - else:
+        - Copy up to buffer_size - 1 bytes of transcript into buffer.
+        - Null-terminate.
+        - Return true.
+  - Behavior: each successful call returns ONE chunk (the next item from the queue), exactly as ASREngine::PollTranscript defines it.
+
+- reset_call()
+  - Called by Python at the start of each logical call session.
+  - Locks g_engine_mutex, calls GetEngine().ResetCall().
+  - Does NOT unload the model or stop SnapshotWorker; it only resets per-call state.
+
+- shutdown_asr_engine()
+  - Called on process shutdown.
+  - Locks g_engine_mutex, calls GetEngine().Shutdown().
+  - After this, push_audio/poll_transcript/reset_call should be considered no-ops or safe but inert.
+
+ASRENGINE RESPONSIBILITIES FOR INTEGRATION
+
+- Initialize(model_path):
+  - Construct AudioRingBuffer, VADDetector, HeartbeatLogger, ExceptionLogger.
+  - Construct SnapshotWorker with ring_buffer and VAD.
+  - Hook SnapshotWorker::SetSnapshotCallback to call ASREngine::HandleSnapshot().
+  - Start SnapshotWorker thread.
+  - Initialize WhisperWrapper with model_path.
+  - After Init returns, engine is ready to receive audio via PushAudio.
+
+- PushAudio(samples, count):
+  - If not initialized or ring_buffer_ null → return false.
+  - Convert/forward samples directly into AudioRingBuffer::PushSamples.
+  - No extra buffering; ring buffer handles wraparound.
+
+- PollTranscript(out):
+  - Implements queue popping as defined in dedup spec.
+  - Called via C -> Python.
+
+START/END CALL PROTOCOL (PYTHON SIDE)
+
+Python should do roughly:
+
+1) At program startup:
+   - load config
+   - init_asr_engine(model_path)
+
+2) When a new call starts:
+   - reset_call()
+   - start audio capture
+   - in a loop:
+       - capture microphone frames → push_audio()
+       - poll_transcript() in a separate thread or same loop
+       - feed any returned transcripts into QuestionDetector.add_text()
+
+3) When call ends:
+   - stop audio capture
+   - optionally flush remaining polls until poll_transcript() returns false for some timeout
+   - run QuestionDetector.flush_pending()
+   - generate call summary
+
+4) At program shutdown:
+   - shutdown_asr_engine()
+
+BACKWARDS COMPATIBILITY EXPECTATION
+
+- Python should not need to know implementation details (snapshots, dedup, whisper.cpp, etc.).
+- All changes happen inside the C++ layer; Python just sees:
+  - `push_audio` as a dump pipe for float32 audio.
+  - `poll_transcript` returning incremental text.
+  - `reset_call` clearing history between calls.
+
+DO NOT
+- Do NOT add any extra exported functions in the C API unless absolutely necessary.
+- Do NOT make the C API depend on C++ types or STL.
+- Do NOT store Python pointers or references in C++.

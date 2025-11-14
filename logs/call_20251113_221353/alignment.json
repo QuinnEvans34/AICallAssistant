@@ -1,0 +1,62 @@
+[
+  {
+    "detected_question": "Oh dude, okay let's see how much this is",
+    "confidence": 0.6,
+    "source_segments": [
+      "Yeah, that's literally the idea.",
+      "literally there did you have",
+      "And there we go.",
+      "on.",
+      "Oh dude, okay.",
+      "Oh dude, okay let's see.",
+      "Oh dude, okay let's see how much...",
+      "Oh dude, okay let's see how much this is"
+    ],
+    "alignment_score": 100.0
+  },
+  {
+    "detected_question": "How much does solar cost",
+    "confidence": 0.7999999999999999,
+    "source_segments": [
+      "literally there did you have",
+      "And there we go.",
+      "on.",
+      "Oh dude, okay.",
+      "Oh dude, okay let's see.",
+      "Oh dude, okay let's see how much...",
+      "Oh dude, okay let's see how much this is",
+      "Dude, okay, let's see. How much does solar cost?"
+    ],
+    "alignment_score": 100.0
+  },
+  {
+    "detected_question": "Sorry dude this is Sorry dude, this is crazy",
+    "confidence": 0.6,
+    "source_segments": [
+      "Oh dude, okay let's see how much...",
+      "Oh dude, okay let's see how much this is",
+      "Dude, okay, let's see. How much does solar cost?",
+      "Let's see how much does solar cost?",
+      "Sorry.",
+      "Sorry, you did.",
+      "Sorry dude this is",
+      "Sorry dude, this is crazy"
+    ],
+    "alignment_score": 100.0
+  },
+  {
+    "detected_question": "Wow, I just spent like two",
+    "confidence": 0.6,
+    "source_segments": [
+      "Sorry, you did.",
+      "Sorry dude this is",
+      "Sorry dude, this is crazy",
+      ".",
+      "Dude, this is crazy.",
+      "Wow.",
+      "Wow, I just...",
+      "Wow, I just spent like two"
+    ],
+    "alignment_score": 100.0
+  }
+]

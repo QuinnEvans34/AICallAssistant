@@ -1,0 +1,12 @@
+{
+  "summary_text": "Summary generation failed.",
+  "questions": [
+    "Oh dude, okay let's see how much this is",
+    "How much does solar cost",
+    "Sorry dude this is Sorry dude, this is crazy",
+    "Wow, I just spent like two"
+  ],
+  "answers": [],
+  "transcript_file": "transcript.json",
+  "generated_at": "2025-11-13T22:14:20.079942"
+}

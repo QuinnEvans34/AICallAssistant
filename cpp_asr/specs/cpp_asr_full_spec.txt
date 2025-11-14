@@ -1,0 +1,155 @@
+FILE: cpp_asr_full_spec.txt
+PURPOSE:
+This file defines the *complete implementation requirements* for the C++ ASR subsystem (cpp_asr/) including:
+- Whisper C++ integration
+- WebRTC VAD integration
+- SnapshotWorker real logic
+- Deduplication logic in ASREngine
+- Heartbeat + exception logging
+- Python bridge lifecycle
+- ResetCall correctness
+- End-to-end streaming pipeline behavior
+
+GOAL:
+Fully implement the C++ side so that Python can drive real-time ASR using push_audio() + poll_transcript().
+
+=======================================================================
+SECTION A — WHISPER INTEGRATION
+=======================================================================
+Use whisper.cpp or any equivalent C++ Whisper wrapper.
+
+WhisperWrapper requirements:
+- LoadModel(model_path):
+    - Thread safe
+    - Destroy previous context on reload
+    - load whisper context
+    - loaded_ = true on success; false otherwise
+    - no exceptions thrown
+
+- DecodeBlocking(audio):
+    - Runs full whisper decode synchronously
+    - speech snapshot is 16kHz float32 PCM
+    - return:
+        transcript: string
+        average_logprob: double
+        is_final: true
+    - callback invocation outside mutex
+
+- DecodeAsync:
+    - Simply call std::async(... DecodeBlocking ...)
+
+No code may throw.
+
+=======================================================================
+SECTION B — WEBRTC VAD
+=======================================================================
+VADDetector must use:
+- WebRtcVad_Create
+- WebRtcVad_Init
+- WebRtcVad_set_mode
+- WebRtcVad_Process
+
+Fallback: RMS energy threshold when WebRTC unavailable.
+
+Reset():
+- Re-init WebRTC state if handle exists.
+
+=======================================================================
+SECTION C — SNAPSHOTWORKER REAL LOGIC
+=======================================================================
+WorkerLoop:
+- snapshot_duration_ms → ~2500 ms
+- snapshot_period_ms → ~500 ms
+- Compute snapshot_samples properly
+- TryReadSlice(snapshot_samples)
+- Split snapshot into frames based on VAD frame size (20–30 ms)
+- speech_ratio = #speech_frames / total_frames
+- If speech_ratio < min_speech_ratio → skip
+- Peak normalize snapshot → max(|sample|) → scale to 0.99
+- Call snapshot_callback(snapshot) outside locks
+- Entire body wrapped in try/catch with no throw
+- Sleep(snapshot_period_ms) at the end of each loop
+
+SnapshotWorker::Reset():
+- Stop + Start again.
+
+=======================================================================
+SECTION D — DEDUPLICATION IN ASRENGINE
+=======================================================================
+tail_text_ contains rolling text.
+max_tail_chars_ ≈ 200.
+dedup_window_ ≈ 40.
+
+ExtractNovelSuffix(raw):
+- Compare raw prefix against tail_text_ suffix.
+- Return raw minus overlapping prefix.
+
+HandleSnapshot():
+- decode
+- dedup via ExtractNovelSuffix
+- if novel text exists:
+    - append to queue
+    - update tail_text_ (trim to max_tail_chars)
+- call transcript callback
+
+ResetCall():
+- Clear tail_text_
+- Clear transcript_queue_
+- Clear ring buffer
+- vad->Reset()
+- snapshot_worker->Reset()
+- Reload heartbeat + exception logger paths
+
+=======================================================================
+SECTION E — HEARTBEAT + EXCEPTION LOGGING
+=======================================================================
+HeartbeatLogger:
+- For each snapshot, write:
+  {
+    "ts": "...",
+    "queue_depth": int,
+    "snapshot_latency_ms": int,
+    "processing_time_ms": int,
+    "vad_detected": bool
+  }
+- Thread-safe, file append.
+
+ExceptionLogger:
+- Log any caught exception:
+  {
+    "ts": "...",
+    "component": "snapshot_worker/asr_engine/whisper",
+    "error": "message"
+  }
+
+=======================================================================
+SECTION F — PYTHON BRIDGE / LIFECYCLE
+=======================================================================
+Functions must behave exactly:
+
+C API:
+void init_asr_engine(const char* model_path);
+void push_audio(const float* samples, int num_samples);
+bool poll_transcript(char* out_buffer, int buffer_size);
+void reset_call();
+void shutdown_asr_engine();
+
+Python must:
+- On call start → reset_call()
+- Capture thread → push_audio(float32 chunk)
+- Poll loop → poll_transcript(), feed to question detector
+- On shutdown → shutdown_asr_engine()
+
+Bindings must be thread-safe.
+
+=======================================================================
+SECTION G — COMPLETION CRITERIA
+=======================================================================
+Everything must compile as a C++20 static library in cpp_asr/.
+All logic must be fully implemented — no stubs remaining.
+All public APIs must match existing headers.
+No new APIs added.
+All try/catch blocks must NOT allow thread termination.
+All logging paths must be respected.
+All mutex usage correct.
+All snapshot processing + dedup + decode fully functional.
