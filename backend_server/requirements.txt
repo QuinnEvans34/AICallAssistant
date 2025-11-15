@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+starlette
+sounddevice
+numpy
+pydantic
+requests
+websockets
+python-multipart
+sentence-transformers
+rapidfuzz

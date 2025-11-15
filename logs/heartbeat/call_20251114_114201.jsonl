@@ -1,0 +1,5 @@
+{"timestamp": "2025-11-14T18:42:04.344442", "chunk_duration_ms": 2500.0, "queue_latency_ms": 1.27, "processing_latency_ms": 332.35}
+{"timestamp": "2025-11-14T18:42:04.820579", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.1, "processing_latency_ms": 307.71}
+{"timestamp": "2025-11-14T18:42:05.353274", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.17, "processing_latency_ms": 339.34}
+{"timestamp": "2025-11-14T18:42:05.839863", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.2, "processing_latency_ms": 325.06}
+{"timestamp": "2025-11-14T18:42:08.355716", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.15, "processing_latency_ms": 337.68}

@@ -1,0 +1,92 @@
+[
+  {
+    "detected_question": "How much does solar cost",
+    "confidence": 0.7999999999999999,
+    "source_segments": [
+      "How much does solar",
+      "cost?"
+    ],
+    "alignment_score": 100.0
+  },
+  {
+    "detected_question": "How does...",
+    "confidence": 0.7,
+    "source_segments": [
+      "How much does solar",
+      "cost?",
+      "How does...",
+      "to solar cost, how does net mean it?"
+    ],
+    "alignment_score": 100.0
+  },
+  {
+    "detected_question": "How does net metering work",
+    "confidence": 0.7999999999999999,
+    "source_segments": [
+      "How much does solar",
+      "cost?",
+      "How does...",
+      "to solar cost, how does net mean it?",
+      "cost. How does net metering work?"
+    ],
+    "alignment_score": 100.0
+  },
+  {
+    "detected_question": "What happened",
+    "confidence": 0.7,
+    "source_segments": [
+      "How much does solar",
+      "cost?",
+      "How does...",
+      "to solar cost, how does net mean it?",
+      "cost. How does net metering work?",
+      "in that metering work. What happened?"
+    ],
+    "alignment_score": 100.0
+  },
+  {
+    "detected_question": "What happens at night",
+    "confidence": 0.7999999999999999,
+    "source_segments": [
+      "How much does solar",
+      "cost?",
+      "How does...",
+      "to solar cost, how does net mean it?",
+      "cost. How does net metering work?",
+      "in that metering work. What happened?",
+      "during work, what happens in...",
+      "What happens at night?"
+    ],
+    "alignment_score": 100.0
+  },
+  {
+    "detected_question": "What is the word",
+    "confidence": 0.7999999999999999,
+    "source_segments": [
+      "How does...",
+      "to solar cost, how does net mean it?",
+      "cost. How does net metering work?",
+      "in that metering work. What happened?",
+      "during work, what happens in...",
+      "What happens at night?",
+      "night.",
+      "What is the word?"
+    ],
+    "alignment_score": 100.0
+  },
+  {
+    "detected_question": "What is the warranty",
+    "confidence": 0.7999999999999999,
+    "source_segments": [
+      "to solar cost, how does net mean it?",
+      "cost. How does net metering work?",
+      "in that metering work. What happened?",
+      "during work, what happens in...",
+      "What happens at night?",
+      "night.",
+      "What is the word?",
+      "What is the warranty?"
+    ],
+    "alignment_score": 100.0
+  }
+]

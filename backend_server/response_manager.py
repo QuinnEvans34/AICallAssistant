@@ -1038,6 +1038,8 @@ class ResponseManager:
             "is_draft": is_draft,
             "message_type": message_type,
             "timestamp": time.time(),  # Add timestamp for ordering
+            "questions": [item.get("question", "") for item in qa_bundle if item.get("question")],
+            "response_text": response_text,
         }
 
         self.response_callback(payload)
@@ -1678,6 +1680,8 @@ class ResponseManager:
             "is_draft": is_draft,
             "message_type": message_type,
             "timestamp": time.time(),  # Add timestamp for ordering
+            "questions": [item.get("question", "") for item in qa_bundle if item.get("question")],
+            "response_text": response_text,
         }
         self.response_callback(payload)
 

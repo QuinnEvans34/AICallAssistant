@@ -1,0 +1,15 @@
+{"timestamp": "2025-11-14T05:43:09.925398", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.8, "processing_latency_ms": 388.88}
+{"timestamp": "2025-11-14T05:43:10.394620", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.23, "processing_latency_ms": 356.98}
+{"timestamp": "2025-11-14T05:43:10.995447", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.27, "processing_latency_ms": 456.33}
+{"timestamp": "2025-11-14T05:43:11.435615", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.1, "processing_latency_ms": 395.96}
+{"timestamp": "2025-11-14T05:43:11.946716", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.07, "processing_latency_ms": 406.71}
+{"timestamp": "2025-11-14T05:43:12.408377", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.19, "processing_latency_ms": 367.85}
+{"timestamp": "2025-11-14T05:43:12.987411", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.1, "processing_latency_ms": 446.45}
+{"timestamp": "2025-11-14T05:43:13.939006", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.1, "processing_latency_ms": 397.16}
+{"timestamp": "2025-11-14T05:43:14.549868", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.1, "processing_latency_ms": 507.29}
+{"timestamp": "2025-11-14T05:43:15.066095", "chunk_duration_ms": 2500.0, "queue_latency_ms": 2.12, "processing_latency_ms": 520.57}
+{"timestamp": "2025-11-14T05:43:15.463263", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.13, "processing_latency_ms": 416.83}
+{"timestamp": "2025-11-14T05:43:17.075536", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.72, "processing_latency_ms": 521.03}
+{"timestamp": "2025-11-14T05:43:17.553958", "chunk_duration_ms": 2500.0, "queue_latency_ms": 1.08, "processing_latency_ms": 495.32}
+{"timestamp": "2025-11-14T05:43:18.019689", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.1, "processing_latency_ms": 461.21}
+{"timestamp": "2025-11-14T05:43:18.485629", "chunk_duration_ms": 2500.0, "queue_latency_ms": 0.11, "processing_latency_ms": 424.01}

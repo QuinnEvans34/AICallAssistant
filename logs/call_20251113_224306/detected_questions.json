@@ -1,0 +1,37 @@
+[
+  {
+    "timestamp": "2025-11-13T22:43:10.394728",
+    "question": "How much does solar cost",
+    "confidence": 0.7999999999999999
+  },
+  {
+    "timestamp": "2025-11-13T22:43:11.946772",
+    "question": "How does...",
+    "confidence": 0.7
+  },
+  {
+    "timestamp": "2025-11-13T22:43:12.408468",
+    "question": "How does net metering work",
+    "confidence": 0.7999999999999999
+  },
+  {
+    "timestamp": "2025-11-13T22:43:13.939053",
+    "question": "What happened",
+    "confidence": 0.7
+  },
+  {
+    "timestamp": "2025-11-13T22:43:15.066160",
+    "question": "What happens at night",
+    "confidence": 0.7999999999999999
+  },
+  {
+    "timestamp": "2025-11-13T22:43:17.553868",
+    "question": "What is the word",
+    "confidence": 0.7999999999999999
+  },
+  {
+    "timestamp": "2025-11-13T22:43:18.019598",
+    "question": "What is the warranty",
+    "confidence": 0.7999999999999999
+  }
+]

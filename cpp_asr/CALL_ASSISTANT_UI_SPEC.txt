@@ -1,0 +1,361 @@
+Purpose
+
+This document describes the entire specification for building a C# .NET 8 WPF UI for a real-time call-assistant system.
+Copilot/Codex should use this as the master reference for generating all UI code, structure, classes, and integration logic.
+
+The backend consists of:
+
+C++ ASR module (Whisper.cpp + ring buffer + VAD)
+
+Python service that calls the C++ ASR via a C API
+
+Python also handles:
+
+Transcript polling
+
+Question detection
+
+LLM response generation
+
+Logging
+
+Evaluation
+
+The C# UI is a frontend only. It never touches ASR or Whisper directly.
+It talks only to the Python backend over REST + WebSockets.
+
+The UI must be lightweight, modern, fast, and simple to use.
+
+1. Architecture Overview
+1.1 System diagram
+[C++ ASR Engine DLL]
+    ↑        |
+    | C API  |
+    |        ↓
+[Python Backend Service]
+    — REST: start_call, end_call
+    — WebSockets: transcript, questions, suggestions, status
+    — Produces JSON logs
+
+[C# .NET 8 WPF UI]
+    — Connects to Python via REST + WebSockets
+    — Displays:
+         transcript (live)
+         detected questions
+         LLM suggested responses
+         call status + latency
+    — Buttons: Start Call, End Call
+
+1.2 The UI never directly loads the ASR model
+
+All audio processing is Python → C++.
+C# only displays data.
+
+2. Required Communication Interfaces
+
+Copilot must implement C# clients for:
+
+2.1 REST Endpoints (Python backend)
+POST /start_call
+
+Starts a new call session.
+Returns:
+
+{"status": "ok"}
+
+POST /end_call
+
+Ends the current call.
+Returns:
+
+{"status": "ok"}
+
+GET /current_transcript
+
+Returns the full current transcript (for initial load or refresh):
+
+{"transcript": "full text so far"}
+
+2.2 WebSocket Endpoints
+
+C# MUST connect to these concurrently.
+All are unidirectional streaming from Python → C#.
+
+/ws/transcript
+
+Messages are plain text strings containing incremental transcript chunks.
+Examples:
+
+"yeah so the policy includes unlimited coverage"
+"let me explain that real quick"
+
+/ws/questions
+
+Messages are JSON:
+
+{
+  "timestamp": "2025-01-01T12:00:00Z",
+  "question": "What is the interest rate?"
+}
+
+/ws/suggestions
+
+Messages are JSON:
+
+{
+  "question": "What is the interest rate?",
+  "suggestions": [
+    "The standard rate is 4.3% APR.",
+    "We also offer a fixed-rate option if you'd prefer."
+  ]
+}
+
+/ws/status
+
+Messages are JSON:
+
+{
+  "asr_latency_ms": 180,
+  "queue_depth": 2,
+  "errors": 0,
+  "processing": true
+}
+
+3. Required UI Layout (WPF)
+
+Copilot must generate XAML and supporting C#.
+
+The UI must contain 4 areas:
+
+3.1 Top Bar
+
+Start Call button
+
+End Call button
+
+Status indicator (live / idle / error)
+
+3.2 Left Panel – Real-Time Transcript
+
+Scrollable text area that appends new transcript lines as they arrive.
+
+3.3 Right Panel – Detected Questions + LLM Suggestions
+
+A ListView or ItemsControl with a card layout:
+
+-------------------------------------
+Question: "What is the interest rate?"
+Suggestion #1: ...
+Suggestion #2: ...
+Suggestion #3: ...
+-------------------------------------
+
+3.4 Bottom Bar – System Stats
+
+ASR latency (ms)
+
+Queue depth
+
+Errors
+
+Processing state
+
+4. Required C# Classes
+
+Copilot must generate the following classes:
+
+4.1 WebSocketManager
+
+Handles 3 WebSocket connections:
+
+transcriptSocket
+
+questionSocket
+
+suggestionSocket
+
+statusSocket
+
+Responsibilities:
+
+Connect()
+
+Reconnect on drop
+
+Receive loops
+
+Event handlers for message arrival
+
+4.2 RestClient
+
+Wrapper around HttpClient for:
+
+StartCallAsync()
+
+EndCallAsync()
+
+GetTranscriptAsync()
+
+4.3 ViewModel Classes
+
+Use simple MVVM or code-behind—either is fine.
+
+TranscriptViewModel
+
+QuestionListViewModel
+
+SuggestionViewModel
+
+StatusViewModel
+
+Each must expose observable properties for binding.
+
+5. How the UI Interacts with Python
+5.1 Initialization
+
+On app launch:
+
+Connect to all WebSockets
+
+Fetch initial transcript with GET /current_transcript
+
+Render empty question/suggestion lists
+
+5.2 Start Call Pressed
+
+Send POST /start_call
+
+Clear all UI buffers
+
+Reset transcript box
+
+Reset panels
+
+5.3 End Call Pressed
+
+Send POST /end_call
+Freeze UI.
+Optionally fetch final logs from Python.
+
+5.4 Incoming Transcript Message
+
+Append text to TranscriptViewModel.FullText.
+
+5.5 Incoming Question Message
+
+Insert item:
+
+{
+  "timestamp": "...",
+  "question": "..."
+}
+
+5.6 Incoming Suggestion Message
+
+Attach LLM suggestions to the correct question.
+
+Match by question string.
+
+5.7 Incoming Status Message
+
+Update:
+
+latency
+
+queue depth
+
+processing flag
+
+6. Required File/Folder Structure
+
+Copilot should produce:
+
+CallAssistantUI/
+   App.xaml
+   MainWindow.xaml
+   MainWindow.xaml.cs
+   Services/
+       RestClient.cs
+       WebSocketManager.cs
+   ViewModels/
+       TranscriptViewModel.cs
+       QuestionViewModel.cs
+       SuggestionViewModel.cs
+       StatusViewModel.cs
+   Models/
+       Question.cs
+       Suggestion.cs
+       StatusInfo.cs
+
+7. Styling and UX Rules
+
+Use neutral, professional colors (gray/white/dark blue).
+
+Transcript area must auto-scroll.
+
+Questions + suggestions must update in real time.
+
+Use async/await everywhere.
+
+Do not block UI thread.
+
+Keep fonts large enough for readability.
+
+Ensure no flicker during updates.
+
+8. Error Handling
+
+Copilot must implement:
+
+Retry WebSocket connections with exponential backoff.
+
+Graceful degradation if Python backend restarts.
+
+UI indicators for connection failure.
+
+9. Logging and Debugging (optional)
+
+Copilot may generate:
+
+Debug console window
+
+Log file writer for UI events
+
+Not required for the minimal version.
+
+10. Constraints for Copilot/Codex
+
+Copilot MUST follow these rules:
+
+Do not attempt to call C++ directly from C#.
+Only Python touches the ASR engine.
+
+Do not generate Python code except API interaction snippets.
+
+All streaming must use WebSockets.
+
+All UI updates must use Dispatcher.Invoke in background threads.
+
+Keep XAML clean, minimal, and modular.
+
+Use .NET 8, C# 12.
+
+11. Success Criteria
+
+The UI is considered complete when:
+
+The transcript updates in real time with <50ms UI delay.
+
+Questions appear automatically when Python emits them.
+
+LLM suggestions attach to the correct question.
+
+Status panel shows changing ASR metrics.
+
+Start/End Call work reliably.
+
+UI handles backend restarts without freezing.
+
+Codebase is clean enough for Copilot to maintain.
+
+END OF FILE

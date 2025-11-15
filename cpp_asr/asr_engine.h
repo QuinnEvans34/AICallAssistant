@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -39,7 +40,8 @@ class ASREngine {
   bool Initialize(const std::string& model_path);  // TODO: Wire up components and load Whisper.
   void Shutdown();  // TODO: Stop workers, release buffers, reset metrics.
 
-  bool PushAudio(const float* samples, size_t count);  // TODO: Ingest PCM from Python capture thread.
+  bool PushAudio(const float* samples,
+                 std::size_t count);  // TODO: Ingest PCM from Python capture thread.
   bool PollTranscript(std::string& transcript);        // TODO: Pop most recent transcript for Python poll.
   void ResetCall();                                    // TODO: Clear per-call state before new session.
 
@@ -57,8 +59,8 @@ class ASREngine {
 
   TranscriptCallback transcript_callback_;
   std::string tail_text_;
-  size_t max_tail_chars_ = 200;
-  size_t dedup_window_ = 40;
+  std::size_t max_tail_chars_ = 200;
+  std::size_t dedup_window_ = 40;
 
   std::shared_ptr<AudioRingBuffer> ring_buffer_;
   std::shared_ptr<VADDetector> vad_;
