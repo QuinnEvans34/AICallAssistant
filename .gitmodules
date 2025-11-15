@@ -1,0 +1,6 @@
+[submodule "cpp_asr/third_party/whisper.cpp"]
+	path = cpp_asr/third_party/whisper.cpp
+	url = https://github.com/ggerganov/whisper.cpp.git
+[submodule "cpp_asr/third_party/py-webrtcvad"]
+	path = cpp_asr/third_party/py-webrtcvad
+	url = https://github.com/wiseman/py-webrtcvad.git

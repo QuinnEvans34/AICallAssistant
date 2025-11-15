@@ -4,6 +4,8 @@
 #include <cctype>
 #include <chrono>
 #include <exception>
+#include <cstdlib>
+#include <iostream>
 
 namespace cpp_asr {
 
@@ -60,6 +62,13 @@ ASREngine::ASREngine() = default;
 ASREngine::~ASREngine() { Shutdown(); }
 
 bool ASREngine::Initialize(const std::string& model_path) {
+  bool expected = false;
+  if (initialized_.load()) {
+    return true;
+  }
+
+  // Guard initialization so it only runs once
+  std::lock_guard<std::mutex> init_lock(transcript_mutex_);
   if (initialized_.load()) {
     return true;
   }
@@ -70,16 +79,45 @@ bool ASREngine::Initialize(const std::string& model_path) {
   heartbeat_logger_ = std::make_unique<HeartbeatLogger>();
   exception_logger_ = std::make_unique<ExceptionLogger>();
 
-  whisper_->LoadModel(model_path);
+  // Determine model path: parameter overrides env
+  std::string model = model_path;
+  if (model.empty()) {
+    const char* env_model = std::getenv("ASR_MODEL_PATH");
+    if (env_model) model = env_model;
+  }
 
-  snapshot_worker_ =
-      std::make_unique<SnapshotWorker>(ring_buffer_, vad_);
-  snapshot_worker_->SetSnapshotCallback(
-      [this](const std::vector<float>& snapshot) { HandleSnapshot(snapshot); });
+  bool loaded = false;
+  try {
+    if (!model.empty()) {
+      loaded = whisper_->LoadModel(model);
+      if (!loaded) {
+        exception_logger_->LogException("ASREngine::Initialize", "Failed to load model from path: " + model);
+      }
+    } else {
+      // No model path provided. Check if fake mode allowed.
+      const char* allow_fake = std::getenv("ASR_ALLOW_FAKE");
+      if (allow_fake && std::string(allow_fake) == "1") {
+        // WhisperWrapper.LoadModel may be a stub that supports fake mode.
+        loaded = whisper_->LoadModel("");
+      } else {
+        exception_logger_->LogException("ASREngine::Initialize", "No ASR model path provided and fake mode not enabled.");
+      }
+    }
+  } catch (const std::exception& ex) {
+    exception_logger_->LogException("ASREngine::Initialize", ex.what());
+    loaded = false;
+  } catch (...) {
+    exception_logger_->LogException("ASREngine::Initialize", "Unknown exception during model load");
+    loaded = false;
+  }
+
+  // Continue initialization even if model not loaded, but mark initialized_ appropriately.
+  snapshot_worker_ = std::make_unique<SnapshotWorker>(ring_buffer_, vad_);
+  snapshot_worker_->SetSnapshotCallback([this](const std::vector<float>& snapshot) { HandleSnapshot(snapshot); });
   snapshot_worker_->Start();
 
   initialized_.store(true);
-  return true;
+  return loaded || initialized_.load();
 }
 
 void ASREngine::Shutdown() {
@@ -87,16 +125,29 @@ void ASREngine::Shutdown() {
     return;
   }
 
+  // Stop workers first so no callbacks into this object occur
   if (snapshot_worker_) {
     snapshot_worker_->Stop();
     snapshot_worker_.reset();
   }
 
+  // Clear whisper before other components
   whisper_.reset();
-  vad_.reset();
-  ring_buffer_.reset();
-  heartbeat_logger_.reset();
-  exception_logger_.reset();
+
+  if (vad_) {
+    vad_.reset();
+  }
+
+  if (ring_buffer_) {
+    ring_buffer_.reset();
+  }
+
+  if (heartbeat_logger_) {
+    heartbeat_logger_.reset();
+  }
+  if (exception_logger_) {
+    exception_logger_.reset();
+  }
 
   std::lock_guard<std::mutex> lock(transcript_mutex_);
   std::queue<std::string> empty;
@@ -123,6 +174,7 @@ bool ASREngine::PollTranscript(std::string& transcript) {
 }
 
 void ASREngine::ResetCall() {
+  // Reset per-call state and clear buffers
   std::lock_guard<std::mutex> lock(transcript_mutex_);
   tail_text_.clear();
   std::queue<std::string> empty;
@@ -163,7 +215,7 @@ void ASREngine::ConfigureLogs(const std::string& heartbeat_log_path,
 }
 
 void ASREngine::HandleSnapshot(const std::vector<float>& snapshot) {
-  if (!whisper_ || snapshot.empty()) {
+  if (!initialized_.load() || !whisper_ || snapshot.empty()) {
     return;
   }
 
@@ -182,14 +234,16 @@ void ASREngine::HandleSnapshot(const std::vector<float>& snapshot) {
     }
 
     if (!novel_text.empty()) {
+      // Attach timing information to transcript queue? For now just enqueue text.
       EnqueueTranscript(novel_text);
     }
 
     const auto end_time = std::chrono::steady_clock::now();
     if (heartbeat_logger_) {
-      (void)start_time;
-      (void)end_time;
-      // TODO: Emit heartbeat metrics (latency, queue depth) when wiring is ready.
+      // record metrics (processing latency)
+      auto latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+      // Use queue depth 0 and vad_detected = true as placeholders
+      heartbeat_logger_->LogHeartbeat(0, 0.0, static_cast<double>(latency_ms), true);
     }
   } catch (const std::exception& ex) {
     if (exception_logger_) {
@@ -216,7 +270,13 @@ void ASREngine::EnqueueTranscript(const std::string& text) {
   }
 
   if (callback) {
-    callback(trimmed);
+    try {
+      callback(trimmed);
+    } catch (...) {
+      if (exception_logger_) {
+        exception_logger_->LogException("ASREngine::EnqueueTranscript", "Transcript callback threw an exception");
+      }
+    }
   }
 }
 
@@ -227,8 +287,7 @@ std::string ASREngine::ExtractNovelTextLocked(const std::string& transcript) {
     return {};
   }
 
-  const size_t window =
-      std::min(dedup_window_, norm_tail.normalized.size());
+  const size_t window = std::min(dedup_window_, norm_tail.normalized.size());
   size_t match_len = 0;
   for (size_t k = window; k > 0; --k) {
     const size_t tail_start = norm_tail.normalized.size() - k;

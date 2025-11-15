@@ -35,6 +35,14 @@ add_library(cpp_asr SHARED ${CPP_ASR_SOURCES} ${CPP_ASR_HEADERS})
 target_include_directories(cpp_asr PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(cpp_asr PUBLIC cxx_std_20)
 
+# If whisper.cpp submodule is present, add it and link 'whisper' target
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper.cpp/CMakeLists.txt")
+  message(STATUS "Found whisper.cpp submodule; adding as subdirectory")
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper.cpp" "${CMAKE_CURRENT_BINARY_DIR}/whisper.cpp")
+  target_include_directories(cpp_asr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper.cpp/include")
+  target_link_libraries(cpp_asr PRIVATE whisper)
+endif()
+
 if (WIN32)
     target_link_libraries(cpp_asr PRIVATE ws2_32 winmm)
 endif()
@@ -47,6 +55,32 @@ set_target_properties(
         ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
 )
+
+# If whisper produced DLLs under ${CMAKE_BINARY_DIR}/bin/<CONFIG>, copy them to our runtime dir so the .pyd can load them.
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper.cpp/CMakeLists.txt")
+  if (WIN32)
+    set(WHISPER_BIN_DIR "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+    set(CPPASR_OUT_DIR "${CMAKE_BINARY_DIR}/$<CONFIG>")
+    add_custom_command(TARGET cpp_asr POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPASR_OUT_DIR}"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/whisper.dll"
+        "${CPPASR_OUT_DIR}/whisper.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/ggml.dll"
+        "${CPPASR_OUT_DIR}/ggml.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/ggml-cpu.dll"
+        "${CPPASR_OUT_DIR}/ggml-cpu.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/ggml-base.dll"
+        "${CPPASR_OUT_DIR}/ggml-base.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/whisper.dll"
+        "${CPPASR_OUT_DIR}/whisper.dll"
+    )
+  endif()
+endif()
 
 # Optional pybind11 module target. Consumers can -DCPP_ASR_ENABLE_PYBIND11=ON.
 option(CPP_ASR_ENABLE_PYBIND11 "Build pybind11 bindings" OFF)
