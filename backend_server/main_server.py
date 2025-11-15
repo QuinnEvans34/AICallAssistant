@@ -1,33 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketDisconnect
 
-# Support running as a package (backend_server.main_server) and as a script (python backend_server/main_server.py)
-try:
-    from .asr_engine import ASREngine  # type: ignore
-    from .heartbeat_manager import HeartbeatManager  # type: ignore
-    from .transcript_stream import TranscriptStream  # type: ignore
-    from .call_manager import CallManager  # type: ignore
-except Exception:  # pragma: no cover
-    from asr_engine import ASREngine  # type: ignore
-    from heartbeat_manager import HeartbeatManager  # type: ignore
-    from transcript_stream import TranscriptStream  # type: ignore
-    from call_manager import CallManager  # type: ignore
-
-from call_transcript_recorder import TranscriptRecorder
-
-app = FastAPI(title="Call Assistant Backend", version="1.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+# Lightweight module-level channels (safe to create)
 
 class WebSocketChannel:
     def __init__(self):
@@ -74,26 +53,77 @@ class WebSocketChannel:
             asyncio.run_coroutine_threadsafe(self.queue.put(("json", payload)), self.loop)
 
 
+# Channels used by UI
 transcript_channel = WebSocketChannel()
 question_channel = WebSocketChannel()
 suggestion_channel = WebSocketChannel()
 status_channel = WebSocketChannel()
 
-# Initialize ASR engine and stream components
-asr_engine = ASREngine()
-transcript_recorder = TranscriptRecorder()
-transcript_stream = TranscriptStream(asr_engine, transcript_recorder, lambda _: None, lambda _: None)
-heartbeat = HeartbeatManager()
-
-call_manager = CallManager(
-    transcript_stream=transcript_stream,
-    heartbeat=heartbeat,
-    broadcast_transcript=lambda text: transcript_channel.send_text(text),
-    broadcast_question=lambda payload: question_channel.send_json(payload),
-    broadcast_suggestion=lambda payload: suggestion_channel.send_json(payload),
-    broadcast_status=lambda payload: status_channel.send_json(payload),
-    transcript_recorder=transcript_recorder,
+app = FastAPI(title="Call Assistant Backend", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+# Lazy-loaded heavy components
+_backend_lock = threading.Lock()
+_backend_inited = False
+_call_manager = None
+
+
+def ensure_backend_initialized():
+    """Initialize heavy backend components on first use.
+
+    This defers importing and constructing large dependencies so the
+    application can start reliably and only allocate resources when
+    necessary. Thread-safe.
+    """
+    global _backend_inited, _call_manager
+    if _backend_inited:
+        return
+
+    with _backend_lock:
+        if _backend_inited:
+            return
+        try:
+            # Import here to avoid heavy imports at module import time
+            try:
+                from .asr_engine import ASREngine  # type: ignore
+                from .heartbeat_manager import HeartbeatManager  # type: ignore
+                from .transcript_stream import TranscriptStream  # type: ignore
+                from .call_manager import CallManager  # type: ignore
+            except Exception:  # pragma: no cover
+                from asr_engine import ASREngine  # type: ignore
+                from heartbeat_manager import HeartbeatManager  # type: ignore
+                from transcript_stream import TranscriptStream  # type: ignore
+                from call_manager import CallManager  # type: ignore
+
+            from call_transcript_recorder import TranscriptRecorder
+
+            asr_engine = ASREngine()
+            transcript_recorder = TranscriptRecorder()
+            transcript_stream = TranscriptStream(asr_engine, transcript_recorder, lambda _: None, lambda _: None)
+            heartbeat = HeartbeatManager()
+
+            _call_manager = CallManager(
+                transcript_stream=transcript_stream,
+                heartbeat=heartbeat,
+                broadcast_transcript=lambda text: transcript_channel.send_text(text),
+                broadcast_question=lambda payload: question_channel.send_json(payload),
+                broadcast_suggestion=lambda payload: suggestion_channel.send_json(payload),
+                broadcast_status=lambda payload: status_channel.send_json(payload),
+                transcript_recorder=transcript_recorder,
+            )
+
+            _backend_inited = True
+        except Exception:
+            # If initialization fails, ensure we don't leave partially-initialized state
+            _backend_inited = False
+            _call_manager = None
+            raise
 
 
 @app.get("/health")
@@ -103,19 +133,22 @@ async def health():
 
 @app.post("/start_call")
 async def start_call():
-    call_id = call_manager.start_call()
+    ensure_backend_initialized()
+    call_id = _call_manager.start_call()
     return {"status": "ok", "call_id": call_id}
 
 
 @app.post("/end_call")
 async def end_call():
-    call_manager.end_call()
+    ensure_backend_initialized()
+    _call_manager.end_call()
     return {"status": "ok"}
 
 
 @app.get("/current_transcript")
 async def current_transcript():
-    return {"transcript": call_manager.get_transcript_text()}
+    ensure_backend_initialized()
+    return {"transcript": _call_manager.get_transcript_text()}
 
 
 @app.websocket("/ws/transcript")
@@ -153,7 +186,13 @@ async def ws_status(websocket: WebSocket):
     await status_channel.connect(websocket)
     try:
         # Send initial snapshot (PascalCase for C# DTOs)
-        snapshot = heartbeat.snapshot()
+        # Ensure backend is initialized so heartbeat exists
+        try:
+            ensure_backend_initialized()
+            snapshot = _call_manager.heartbeat.snapshot() if _call_manager else {}
+        except Exception:
+            snapshot = {}
+
         await websocket.send_json(
             {
                 "AsrLatencyMs": snapshot.get("asr_latency_ms", 0.0),

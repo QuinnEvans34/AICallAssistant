@@ -4,11 +4,11 @@
 
 namespace cpp_asr {
 
-VADDetector::VADetector(Config config) : config_(config) {
+VADDetector::VADDetector(Config config) : config_(config) {
   webrtc_handle_ = nullptr;
 }
 
-VADDetector::~VADetector() {
+VADDetector::~VADDetector() {
   webrtc_handle_ = nullptr;
 }
 
