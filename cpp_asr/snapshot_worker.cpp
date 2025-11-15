@@ -57,7 +57,16 @@ void SnapshotWorker::WorkerLoop() {
 
   std::vector<float> snapshot;
   while (running_.load()) {
-    std::this_thread::sleep_for(sleep_duration);
+    // Wait for new data or timeout
+    // Use ring buffer's condition variable to wake early
+    if (!ring_buffer_) {
+      std::this_thread::sleep_for(sleep_duration);
+    } else {
+      // Wait for a short period to allow buffer to fill
+      std::unique_lock<std::mutex> lk(ring_buffer_->GetMutexForWait());
+      ring_buffer_->GetDataReadyCv().wait_for(lk, sleep_duration);
+    }
+
     if (!running_.load()) {
       break;
     }

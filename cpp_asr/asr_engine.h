@@ -8,6 +8,7 @@
 #include <mutex>
 #include <queue>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "audio_ringbuffer.h"
@@ -54,6 +55,11 @@ class ASREngine {
   void EnqueueTranscript(const std::string& text);
   std::string ExtractNovelTextLocked(const std::string& transcript);
 
+  // Decode worker
+  void StartDecodeWorkers(size_t num_threads = 2);
+  void StopDecodeWorkers();
+  void DecodeWorkerLoop();
+
   std::mutex transcript_mutex_;
   std::queue<std::string> transcript_queue_;
 
@@ -72,6 +78,19 @@ class ASREngine {
   std::string exception_log_path_;
 
   std::atomic<bool> initialized_{false};
+
+  // Decode threadpool
+  std::vector<std::thread> decode_threads_;
+  std::queue<std::pair<std::vector<float>, std::chrono::steady_clock::time_point>> decode_queue_;
+  std::mutex decode_mutex_;
+  std::condition_variable decode_cv_;
+  std::atomic<bool> decode_running_{false};
+
+  // Metrics
+  std::atomic<size_t> snapshots_processed_{0};
+  std::atomic<double> total_decode_ms_{0.0};
+  std::string last_transcript_;
+  std::mutex last_transcript_mutex_;
 };
 
 }  // namespace cpp_asr

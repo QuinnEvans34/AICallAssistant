@@ -15,7 +15,7 @@ if len(sys.argv) < 2:
 
 wav_path = sys.argv[1]
 
-# Read WAV and resample if needed (assumes 16kHz mono input for now)
+# Read WAV
 with wave.open(wav_path, 'rb') as wf:
     nch = wf.getnchannels()
     sr = wf.getframerate()
@@ -35,16 +35,23 @@ if nch > 1:
     audio = audio.reshape(-1, nch)
     audio = audio.mean(axis=1)
 
-# TODO: Resample to 16000 if sr != 16000. For now, require 16k.
+# Resample to 16k if needed (simple linear resample)
 if sr != 16000:
-    print('Input sample rate is %d, but this test expects 16000.' % sr)
-    sys.exit(2)
+    import math
+    ratio = 16000.0 / sr
+    new_len = int(math.ceil(len(audio) * ratio))
+    indices = np.linspace(0, len(audio) - 1, new_len)
+    left = np.floor(indices).astype(int)
+    right = np.minimum(left + 1, len(audio) - 1)
+    frac = indices - left
+    resampled = (1 - frac) * audio[left] + frac * audio[right]
+    audio = resampled.astype(np.float32)
 
 # Initialize engine
 native.init_asr_engine("")  # empty -> fake mode if configured
 
-# Push audio in chunks
-chunk = 16000  # 1 second
+# Push audio in chunks of 0.5s
+chunk = 16000 // 2  # 0.5 second
 pos = 0
 start = time.time()
 while pos < len(audio):
@@ -52,7 +59,7 @@ while pos < len(audio):
     buf = audio[pos:end].astype(np.float32)
     native.push_audio(buf)
     pos = end
-    time.sleep(0.1)
+    time.sleep(0.05)
 
 # Poll for transcripts
 deadline = time.time() + 10.0

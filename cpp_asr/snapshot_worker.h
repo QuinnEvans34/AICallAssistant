@@ -24,7 +24,7 @@ class SnapshotWorker {
   using SnapshotCallback = std::function<void(const std::vector<float>&)>;
 
   struct Config {
-    int snapshot_duration_ms = 2000;
+    int snapshot_duration_ms = 2500;
     int snapshot_period_ms = 500;
     float min_speech_ratio = 0.2f;
   };
@@ -41,6 +41,11 @@ class SnapshotWorker {
   void Stop();
   void Reset();
   void SetSnapshotCallback(SnapshotCallback cb);
+
+  // Expose internals to allow wait_for on buffer readiness
+  // NOTE: These give access to low-level synchronization primitives of the ring buffer.
+  std::mutex& GetRingBufferMutex() const { return ring_buffer_->GetMutexRef(); }
+  std::condition_variable& GetRingBufferCv() const { return ring_buffer_->GetDataReadyCvRef(); }
 
  private:
   void WorkerLoop();

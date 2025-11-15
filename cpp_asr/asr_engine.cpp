@@ -111,13 +111,103 @@ bool ASREngine::Initialize(const std::string& model_path) {
     loaded = false;
   }
 
-  // Continue initialization even if model not loaded, but mark initialized_ appropriately.
+  // Start snapshot worker
   snapshot_worker_ = std::make_unique<SnapshotWorker>(ring_buffer_, vad_);
-  snapshot_worker_->SetSnapshotCallback([this](const std::vector<float>& snapshot) { HandleSnapshot(snapshot); });
+  snapshot_worker_->SetSnapshotCallback([this](const std::vector<float>& snapshot) {
+    // Queue decode work asynchronously.
+    {
+      std::lock_guard<std::mutex> lock(decode_mutex_);
+      decode_queue_.emplace(snapshot, std::chrono::steady_clock::now());
+    }
+    decode_cv_.notify_one();
+  });
   snapshot_worker_->Start();
+
+  // Start decode workers
+  StartDecodeWorkers(2);
 
   initialized_.store(true);
   return loaded || initialized_.load();
+}
+
+void ASREngine::StartDecodeWorkers(size_t num_threads) {
+  decode_running_.store(true);
+  for (size_t i = 0; i < num_threads; ++i) {
+    decode_threads_.emplace_back(&ASREngine::DecodeWorkerLoop, this);
+  }
+}
+
+void ASREngine::StopDecodeWorkers() {
+  decode_running_.store(false);
+  decode_cv_.notify_all();
+  for (auto& t : decode_threads_) {
+    if (t.joinable()) t.join();
+  }
+  decode_threads_.clear();
+}
+
+void ASREngine::DecodeWorkerLoop() {
+  while (decode_running_.load()) {
+    std::pair<std::vector<float>, std::chrono::steady_clock::time_point> work;
+    {
+      std::unique_lock<std::mutex> lock(decode_mutex_);
+      decode_cv_.wait(lock, [this] { return !decode_running_.load() || !decode_queue_.empty(); });
+      if (!decode_running_.load() && decode_queue_.empty()) break;
+      work = std::move(decode_queue_.front());
+      decode_queue_.pop();
+    }
+
+    const auto snapshot_time = work.second;
+    const auto& snapshot = work.first;
+    const auto decode_start = std::chrono::steady_clock::now();
+
+    try {
+      const auto result = whisper_->DecodeBlocking(snapshot);
+      const auto decode_end = std::chrono::steady_clock::now();
+      const double decode_ms = std::chrono::duration_cast<std::chrono::milliseconds>(decode_end - decode_start).count();
+
+      snapshots_processed_.fetch_add(1);
+      total_decode_ms_.fetch_add(decode_ms);
+
+      // VAD decision: run VAD on snapshot frames and compute ratio
+      size_t frame_samples = DurationToSamples(vad_->config().frame_duration_ms, snapshot.size() ? 16000 : 16000);
+      size_t total_frames = 0;
+      size_t speech_frames = 0;
+      for (size_t offset = 0; offset + frame_samples <= snapshot.size(); offset += frame_samples) {
+        ++total_frames;
+        if (vad_->IsSpeech(snapshot.data() + offset, frame_samples)) {
+          ++speech_frames;
+        }
+      }
+      const float speech_ratio = total_frames ? static_cast<float>(speech_frames) / static_cast<float>(total_frames) : 0.0f;
+
+      // Enqueue transcript if novel
+      if (!result.transcript.empty()) {
+        std::string novel_text;
+        {
+          std::lock_guard<std::mutex> lock(transcript_mutex_);
+          novel_text = ExtractNovelTextLocked(result.transcript);
+          if (!novel_text.empty()) {
+            transcript_queue_.push(novel_text);
+            std::lock_guard<std::mutex> lt(last_transcript_mutex_);
+            last_transcript_ = novel_text;
+          }
+        }
+
+        // Emit heartbeat entry
+        if (heartbeat_logger_) {
+          double avg_decode = 0.0;
+          size_t count = snapshots_processed_.load();
+          if (count > 0) avg_decode = total_decode_ms_.load() / static_cast<double>(count);
+          heartbeat_logger_->LogHeartbeat(static_cast<int>(decode_queue_.size()), snapshot.size() / 16.0, decode_ms, speech_ratio > 0.2f);
+        }
+      }
+    } catch (const std::exception& ex) {
+      if (exception_logger_) exception_logger_->LogException("ASREngine::DecodeWorkerLoop", ex.what());
+    } catch (...) {
+      if (exception_logger_) exception_logger_->LogException("ASREngine::DecodeWorkerLoop", "Unknown exception");
+    }
+  }
 }
 
 void ASREngine::Shutdown() {
@@ -125,13 +215,20 @@ void ASREngine::Shutdown() {
     return;
   }
 
-  // Stop workers first so no callbacks into this object occur
+  // Stop snapshot worker first so no new work is queued
   if (snapshot_worker_) {
     snapshot_worker_->Stop();
     snapshot_worker_.reset();
   }
 
-  // Clear whisper before other components
+  // Stop decode workers and flush queue
+  StopDecodeWorkers();
+  {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    while (!decode_queue_.empty()) decode_queue_.pop();
+  }
+
+  // Clear whisper
   whisper_.reset();
 
   if (vad_) {
@@ -196,6 +293,14 @@ void ASREngine::ResetCall() {
   if (exception_logger_) {
     exception_logger_->SetLogPath(exception_log_path_);
   }
+
+  // Reset metrics
+  snapshots_processed_.store(0);
+  total_decode_ms_.store(0.0);
+  {
+    std::lock_guard<std::mutex> lt(last_transcript_mutex_);
+    last_transcript_.clear();
+  }
 }
 
 void ASREngine::SetTranscriptCallback(TranscriptCallback cb) {
@@ -214,47 +319,7 @@ void ASREngine::ConfigureLogs(const std::string& heartbeat_log_path,
   exception_log_path_ = exception_log_path;
 }
 
-void ASREngine::HandleSnapshot(const std::vector<float>& snapshot) {
-  if (!initialized_.load() || !whisper_ || snapshot.empty()) {
-    return;
-  }
-
-  const auto start_time = std::chrono::steady_clock::now();
-  try {
-    const auto result = whisper_->DecodeBlocking(snapshot);
-    std::string transcript = TrimWhitespace(result.transcript);
-    if (transcript.empty()) {
-      return;
-    }
-
-    std::string novel_text;
-    {
-      std::lock_guard<std::mutex> lock(transcript_mutex_);
-      novel_text = ExtractNovelTextLocked(transcript);
-    }
-
-    if (!novel_text.empty()) {
-      // Attach timing information to transcript queue? For now just enqueue text.
-      EnqueueTranscript(novel_text);
-    }
-
-    const auto end_time = std::chrono::steady_clock::now();
-    if (heartbeat_logger_) {
-      // record metrics (processing latency)
-      auto latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
-      // Use queue depth 0 and vad_detected = true as placeholders
-      heartbeat_logger_->LogHeartbeat(0, 0.0, static_cast<double>(latency_ms), true);
-    }
-  } catch (const std::exception& ex) {
-    if (exception_logger_) {
-      exception_logger_->LogException("ASREngine::HandleSnapshot", ex.what());
-    }
-  } catch (...) {
-    if (exception_logger_) {
-      exception_logger_->LogException("ASREngine::HandleSnapshot", "Unknown exception");
-    }
-  }
-}
+// Reuse TrimWhitespace/NormalizeForDedup functions from earlier
 
 void ASREngine::EnqueueTranscript(const std::string& text) {
   const std::string trimmed = TrimWhitespace(text);
@@ -267,6 +332,8 @@ void ASREngine::EnqueueTranscript(const std::string& text) {
     std::lock_guard<std::mutex> lock(transcript_mutex_);
     transcript_queue_.push(trimmed);
     callback = transcript_callback_;
+    std::lock_guard<std::mutex> lt(last_transcript_mutex_);
+    last_transcript_ = trimmed;
   }
 
   if (callback) {

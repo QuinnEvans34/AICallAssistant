@@ -64,6 +64,10 @@ class AudioRingBuffer {
   size_t CapacitySamples() const { return capacity_samples_; }
   void Clear();
 
+  // Expose synchronization primitives for SnapshotWorker optimization
+  std::mutex& GetMutexRef() const { return mutex_; }
+  std::condition_variable& GetDataReadyCvRef() const { return data_ready_cv_; }
+
  private:
   static constexpr size_t kSampleRateHz = 16000;
 
