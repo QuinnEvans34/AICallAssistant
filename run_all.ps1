@@ -29,9 +29,10 @@ try {
 $startBackend = Join-Path $repo 'scripts\start_backend.bat'
 if (-not (Test-Path $startBackend)) { Write-Error "start_backend.bat not found at $startBackend"; exit 1 }
 
-# Launch the batch directly (Start-Process will create a new window)
+# Launch backend in a visible cmd window so errors are readable
+$cmd = "start \"CallAssistantBackend\" cmd /k ""SET PATH=%CD%\\cpp_asr\\build\\Release;%%PATH%% & SET PYTHONPATH=%CD%\\cpp_asr\\build\\Release;%%PYTHONPATH%% & \"%CD%\\scripts\\start_backend.bat\""""
 Write-Host "Launching backend: $startBackend"
-Start-Process -FilePath $startBackend -WorkingDirectory $repo -WindowStyle Minimized | Out-Null
+Invoke-Expression $cmd
 
 # Wait for backend health
 Write-Host 'Waiting for backend to become healthy (up to 20s)...'
@@ -54,7 +55,7 @@ if (-not $healthy) {
 }
 
 # Start WPF UI (dotnet run)
-Write-Host 'Starting WPF UI (dotnet run --project CallAssistantUI\CallAssistantUI.csproj)'
-Start-Process -FilePath 'dotnet' -ArgumentList @('run','--project','CallAssistantUI\CallAssistantUI.csproj') -WorkingDirectory $repo | Out-Null
+Write-Host 'Starting WPF UI (dotnet run --project CallAssistantUI\\CallAssistantUI.csproj)'
+Start-Process -FilePath 'dotnet' -ArgumentList @('run','--project','CallAssistantUI\\CallAssistantUI.csproj') -WorkingDirectory $repo | Out-Null
 
-Write-Host 'Launched UI. Use logs\backend_out.log and logs\backend_err.log for backend output.'
+Write-Host 'Launched UI. Use logs\\backend_out.log and logs\\backend_err.log for backend output.'
