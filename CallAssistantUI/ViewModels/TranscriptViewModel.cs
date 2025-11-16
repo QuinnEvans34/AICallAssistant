@@ -7,7 +7,7 @@ public class TranscriptViewModel : ViewModelBase
     public string FullText
     {
         get => _fullText;
-        private set => SetProperty(ref _fullText, value);
+        set => SetProperty(ref _fullText, value);
     }
 
     public void Reset()

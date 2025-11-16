@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("CallAssistantUI")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ca5ee22d54bea8a83cfed13fda69299e5fb4c536")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e49bbf2f3e0f5381a3673788dc58f6fd4f1e7de9")]
 [assembly: System.Reflection.AssemblyProductAttribute("CallAssistantUI")]
 [assembly: System.Reflection.AssemblyTitleAttribute("CallAssistantUI")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

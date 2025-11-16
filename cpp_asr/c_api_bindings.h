@@ -20,8 +20,10 @@ void push_audio(const float* samples, int count);
  */
 bool poll_transcript(char* buffer, int buffer_size);
 
-void reset_call();
+void reset_for_call(const char* call_id);
 void shutdown_asr_engine();
+
+void configure_logs(const char* heartbeat_log_path, const char* exception_log_path);
 
 #ifdef __cplusplus
 }

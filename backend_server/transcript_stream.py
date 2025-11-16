@@ -57,9 +57,13 @@ class TranscriptStream:
         if self.poll_thread:
             self.poll_thread.join(timeout=1.0)
 
-    def reset_for_call(self):
+    def reset_for_call(self, call_id: Optional[str] = None):
+        if call_id is None:
+            import time
+
+            call_id = str(int(time.time()))
         self._last_tail = ""
-        self.asr_engine.reset_call()
+        self.asr_engine.reset_call(call_id)
 
     # ------------------------------------------------------------------ audio capture
     def _audio_loop(self):

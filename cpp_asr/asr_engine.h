@@ -50,6 +50,8 @@ class ASREngine {
   void ConfigureLogs(const std::string& heartbeat_log_path,
                      const std::string& exception_log_path);
 
+  void ResetForCall(const std::string& call_id);
+
  private:
   void HandleSnapshot(const std::vector<float>& snapshot);
   void EnqueueTranscript(const std::string& text);

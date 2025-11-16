@@ -55,6 +55,13 @@ NormalizedText NormalizeForDedup(const std::string& input) {
 
   return result;
 }
+
+size_t DurationToSamples(int duration_ms, size_t sample_rate) {
+  if (duration_ms <= 0) return 0;
+  const double samples = (static_cast<double>(duration_ms) * static_cast<double>(sample_rate)) / 1000.0;
+  return samples < 1.0 ? 1 : static_cast<size_t>(samples);
+}
+
 }  // namespace
 
 ASREngine::ASREngine() = default;
@@ -109,6 +116,17 @@ bool ASREngine::Initialize(const std::string& model_path) {
   } catch (...) {
     exception_logger_->LogException("ASREngine::Initialize", "Unknown exception during model load");
     loaded = false;
+  }
+
+  if (!loaded) {
+    // Tear down partially-constructed components so callers can retry initialize.
+    snapshot_worker_.reset();
+    whisper_.reset();
+    vad_.reset();
+    ring_buffer_.reset();
+    heartbeat_logger_.reset();
+    exception_logger_.reset();
+    return false;
   }
 
   // Start snapshot worker
@@ -170,7 +188,8 @@ void ASREngine::DecodeWorkerLoop() {
       total_decode_ms_.fetch_add(decode_ms);
 
       // VAD decision: run VAD on snapshot frames and compute ratio
-      size_t frame_samples = DurationToSamples(vad_->config().frame_duration_ms, snapshot.size() ? 16000 : 16000);
+      size_t sample_rate = ring_buffer_ ? ring_buffer_->SampleRate() : 16000;
+      size_t frame_samples = DurationToSamples(vad_->config().frame_duration_ms, sample_rate);
       size_t total_frames = 0;
       size_t speech_frames = 0;
       for (size_t offset = 0; offset + frame_samples <= snapshot.size(); offset += frame_samples) {
@@ -300,6 +319,14 @@ void ASREngine::ResetCall() {
   {
     std::lock_guard<std::mutex> lt(last_transcript_mutex_);
     last_transcript_.clear();
+  }
+}
+
+void ASREngine::ResetForCall(const std::string& call_id) {
+  ResetCall();
+  if (!call_id.empty() && heartbeat_logger_) {
+    std::string heartbeat_path = "logs/heartbeat/" + call_id + ".jsonl";
+    heartbeat_logger_->SetLogPath(heartbeat_path);
   }
 }
 

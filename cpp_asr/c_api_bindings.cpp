@@ -57,14 +57,20 @@ bool poll_transcript(char* buffer, int max_len) {
   return true;
 }
 
-void reset_call() {
+void reset_for_call(const char* call_id) {
   std::lock_guard<std::mutex> lock(g_engine_mutex);
-  GetEngine().ResetCall();
+  GetEngine().ResetForCall(call_id ? call_id : "");
 }
 
 void shutdown_asr_engine() {
   std::lock_guard<std::mutex> lock(g_engine_mutex);
   GetEngine().Shutdown();
+}
+
+void configure_logs(const char* heartbeat_log_path, const char* exception_log_path) {
+  std::lock_guard<std::mutex> lock(g_engine_mutex);
+  GetEngine().ConfigureLogs(heartbeat_log_path ? heartbeat_log_path : "",
+                            exception_log_path ? exception_log_path : "");
 }
 
 }  // extern "C"
@@ -89,7 +95,8 @@ PYBIND11_MODULE(cpp_asr_native, m) {
           const bool has_value = poll_transcript(buffer.data(), static_cast<int>(buffer.size()));
           return has_value ? std::string(buffer.data()) : std::string();
         });
-  m.def("reset_call", []() { reset_call(); });
+  m.def("reset_for_call", [](const std::string& call_id) { reset_for_call(call_id.c_str()); });
   m.def("shutdown_asr_engine", []() { shutdown_asr_engine(); });
+  m.def("configure_logs", [](const std::string& heartbeat_path, const std::string& exception_path) { configure_logs(heartbeat_path.c_str(), exception_path.c_str()); });
 }
 #endif

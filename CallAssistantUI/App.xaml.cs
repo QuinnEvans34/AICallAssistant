@@ -19,25 +19,30 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-
-        await EnsureBackendStartedAsync().ConfigureAwait(false);
-
-        var backendBaseAddress = Environment.GetEnvironmentVariable("CALL_ASSISTANT_BACKEND_URL")
-                                    ?? "http://localhost:8000/";
-        var websocketBaseAddress = Environment.GetEnvironmentVariable("CALL_ASSISTANT_WS_URL")
-                                       ?? "ws://localhost:8000";
-
-        var restClient = new RestClient(backendBaseAddress);
-        var webSocketManager = new WebSocketManager(new Uri(websocketBaseAddress));
-
-        _mainViewModel = new MainViewModel(restClient, webSocketManager);
-
-        var window = new MainWindow
+        string uiLog = Path.Combine(AppContext.BaseDirectory, "logs", "ui_startup.log");
+        try
         {
-            DataContext = _mainViewModel
-        };
-
-        window.Show();
+            Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "logs"));
+            File.AppendAllText(uiLog, DateTime.UtcNow+" UI startup begin\n");
+            var backendBaseAddress = Environment.GetEnvironmentVariable("CALL_ASSISTANT_BACKEND_URL")
+                                        ?? "http://localhost:8000/";
+            var websocketBaseAddress = Environment.GetEnvironmentVariable("CALL_ASSISTANT_WS_URL")
+                                           ?? "ws://localhost:8000";
+            File.AppendAllText(uiLog, $"BackendURL={backendBaseAddress} WSURL={websocketBaseAddress}\n");
+            await EnsureBackendStartedAsync().ConfigureAwait(true);
+            var restClient = new RestClient(backendBaseAddress);
+            var webSocketManager = new WebSocketManager(new Uri(websocketBaseAddress));
+            _mainViewModel = new MainViewModel(restClient, webSocketManager);
+            var window = new MainWindow { DataContext = _mainViewModel };
+            window.Show();
+            File.AppendAllText(uiLog, "Window shown\n");
+        }
+        catch (Exception ex)
+        {
+            File.AppendAllText(uiLog, "Startup exception: "+ex+"\n");
+            MessageBox.Show("UI failed to start: "+ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(-1);
+        }
     }
 
     private async Task EnsureBackendStartedAsync()

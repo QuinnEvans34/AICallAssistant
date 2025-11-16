@@ -101,3 +101,6 @@ if (CPP_ASR_ENABLE_PYBIND11)
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
   )
 endif()
+
+add_executable(test_asr test_asr.cpp)
+target_link_libraries(test_asr PRIVATE cpp_asr)

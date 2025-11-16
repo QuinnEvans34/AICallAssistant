@@ -31,32 +31,9 @@ except Exception:
         _native_loaded = False
 
 
-class _FakeNative:
-    def __init__(self):
-        self._initialized = False
-
-    def init_asr_engine(self, model_path: str):  # noqa: D401
-        self._initialized = True
-
-    def push_audio(self, samples):
-        return None
-
-    def poll_transcript(self):
-        return ""
-
-    def reset_call(self):
-        return None
-
-    def shutdown_asr_engine(self):
-        self._initialized = False
-
-
-if native is None and os.getenv("ASR_ALLOW_FAKE", ""):  # allow fake engine for dev/CI
-    native = _FakeNative()  # type: ignore
-
 if native is None:
     raise RuntimeError(
-        "Failed to import cpp_asr_native. Ensure the .pyd is built and on PYTHONPATH, or set ASR_ALLOW_FAKE=1 to run without ASR."
+        "Failed to import cpp_asr_native. Ensure the .pyd is built and on PYTHONPATH."
     )
 
 
@@ -114,11 +91,11 @@ class ASREngine:
             native.init_asr_engine(model_path)  # type: ignore[attr-defined]
             self._initialized = True
 
-    def reset_call(self) -> None:
+    def reset_call(self, call_id: str) -> None:
         with self._lock:
             if not self._initialized:
                 return
-            native.reset_call()
+            native.reset_for_call(call_id)
 
     def push_audio(self, samples) -> None:
         if not self._initialized:

@@ -1,5 +1,5 @@
 # Run backend (in background) and then start the WPF UI
-# Usage: Open Developer PowerShell (x64) and run `.un_all.ps1`
+# Usage: Open Developer PowerShell (x64) and run `.\run_all.ps1`
 
 $ErrorActionPreference = 'Stop'
 # Ensure script runs from repo root (where this script lives)
@@ -9,6 +9,24 @@ Set-Location $repo
 # Ensure logs dir
 $logsDir = Join-Path $repo 'logs'
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir | Out-Null }
+
+# Check for ASR model
+$modelPath = $env:ASR_MODEL_PATH
+if (-not $modelPath -or -not (Test-Path $modelPath)) {
+    $modelsDir = Join-Path $repo 'models'
+    if (Test-Path $modelsDir) {
+        $modelFiles = Get-ChildItem -Path $modelsDir -File -Recurse | Where-Object { $_.Extension -in @('.bin', '.ggml', '.gguf') }
+        if ($modelFiles) {
+            $modelPath = $modelFiles[0].FullName
+            $env:ASR_MODEL_PATH = $modelPath
+        }
+    }
+    if (-not $modelPath) {
+        Write-Error "No ASR model found. Set ASR_MODEL_PATH or place a model in models/ directory."
+        exit 1
+    }
+}
+Write-Host "Using ASR model: $modelPath"
 
 # Kill any process listening on port 8000 (uvicorn) if possible
 try {
@@ -29,10 +47,12 @@ try {
 $startBackend = Join-Path $repo 'scripts\start_backend.bat'
 if (-not (Test-Path $startBackend)) { Write-Error "start_backend.bat not found at $startBackend"; exit 1 }
 
-# Launch backend in a visible cmd window so errors are readable
-$cmd = "start \"CallAssistantBackend\" cmd /k ""SET PATH=%CD%\\cpp_asr\\build\\Release;%%PATH%% & SET PYTHONPATH=%CD%\\cpp_asr\\build\\Release;%%PYTHONPATH%% & \"%CD%\\scripts\\start_backend.bat\""""
-Write-Host "Launching backend: $startBackend"
-Invoke-Expression $cmd
+# Prepare cmd argument to set PATH and PYTHONPATH for the new cmd session and then call the batch
+$batchPath = $startBackend
+$cmdInner = "`"$batchPath`""
+
+Write-Host "Launching backend (visible window)"
+$backendProcess = Start-Process -FilePath 'C:\Windows\System32\cmd.exe' -ArgumentList @('/k', $cmdInner) -WorkingDirectory $repo -WindowStyle Normal -PassThru
 
 # Wait for backend health
 Write-Host 'Waiting for backend to become healthy (up to 20s)...'
@@ -50,12 +70,23 @@ if (-not $healthy) {
     if (Test-Path "$logsDir\\backend_out.log") { Get-Content "$logsDir\\backend_out.log" -Tail 200 }
     Write-Host '--- backend_err.log ---'
     if (Test-Path "$logsDir\\backend_err.log") { Get-Content "$logsDir\\backend_err.log" -Tail 200 }
+    exit 1
 } else {
     Write-Host 'Backend healthy.'
 }
 
 # Start WPF UI (dotnet run)
 Write-Host 'Starting WPF UI (dotnet run --project CallAssistantUI\\CallAssistantUI.csproj)'
-Start-Process -FilePath 'dotnet' -ArgumentList @('run','--project','CallAssistantUI\\CallAssistantUI.csproj') -WorkingDirectory $repo | Out-Null
+$uiProcess = Start-Process -FilePath 'C:\Program Files\dotnet\dotnet.exe' -ArgumentList @('run','--project','CallAssistantUI\\CallAssistantUI.csproj') -WorkingDirectory $repo -PassThru
 
-Write-Host 'Launched UI. Use logs\\backend_out.log and logs\\backend_err.log for backend output.'
+# Wait for processes to exit
+try {
+    $backendProcess.WaitForExit()
+    $uiProcess.WaitForExit()
+} catch {
+    # If interrupted, kill processes
+    if ($backendProcess -and -not $backendProcess.HasExited) { $backendProcess.Kill() }
+    if ($uiProcess -and -not $uiProcess.HasExited) { $uiProcess.Kill() }
+}
+
+Write-Host 'All processes have exited.'

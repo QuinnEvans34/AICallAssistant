@@ -10,9 +10,9 @@ pip install -r backend_server/requirements.txt
 
 ## 2. Configure ASR Resources
 
-- **C++ DLL**: Build the Whisper-based ASR DLL from `cpp_asr/` and place it where the backend can load it.  
-  - Default lookup: `build/Release/cpp_asr.dll` relative to the repo root.  
-  - Override path via `ASR_DLL_PATH`.
+- **C++ DLL + PyBind module**: Run `build_asr.bat` (or `.\build_asr.ps1`) from the repo root. The script detects your Python interpreter, enables `CPP_ASR_ENABLE_PYBIND11`, and produces both `cpp_asr.dll` and `cpp_asr_native.pyd` under `cpp_asr/build/Release/`.  
+  - The backend automatically prepends `cpp_asr/build/Release/` to `PYTHONPATH`, so leave the artifacts in place.  
+  - Override the DLL lookup path via `ASR_DLL_PATH` if you relocate it.
 - **Model file**: Provide the Whisper model path required by the DLL via `ASR_MODEL_PATH` (e.g., `C:\models\ggml-base.en.bin`).
 
 Environment variables respected by the backend:
